@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CDP Writer 2026</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">CDP Evaluation & Answer Studio</p>
+        <h1>CDP Writer 2026</h1>
+      </div>
+      <div class="header-actions">
+        <select id="datasetSelect" title="평가기준 데이터셋">
+          <option value="./data/cdp_2026_full_dataset.json">2026 Full Corporate</option>
+          <option value="./data/cdp_cc_ch_model_answers.json">2025 CC CH pilot</option>
+        </select>
+        <div class="segmented" aria-label="언어 보기">
+          <button type="button" data-language="ko">한국어</button>
+          <button type="button" data-language="en">English</button>
+          <button type="button" data-language="both" class="is-active">한/영</button>
+        </div>
+        <button id="exportJsonButton" type="button" class="ghost-button">JSON 내보내기</button>
+        <button id="exportCsvButton" type="button" class="primary-button">CSV 내보내기</button>
+      </div>
+    </header>
+
+    <main class="app-layout">
+      <nav class="side-nav" aria-label="Main">
+        <button class="nav-button is-active" type="button" data-view="dashboard">Overview</button>
+        <button class="nav-button" type="button" data-view="writer">Writer</button>
+        <button class="nav-button" type="button" data-view="evaluation">Evaluation</button>
+        <button class="nav-button" type="button" data-view="references">References</button>
+        <button class="nav-button" type="button" data-view="evidence">Evidence</button>
+        <button class="nav-button" type="button" data-view="export">Export</button>
+      </nav>
+
+      <section id="app" class="workspace">
+        <div class="loading-panel">Loading CDP methodology data...</div>
+      </section>
+    </main>
+
+    <template id="dashboardTemplate">
+      <section class="dashboard">
+        <div class="notice">
+          <div>
+            <p class="eyebrow">Workspace</p>
+            <h2 data-field="datasetTitle"></h2>
+          </div>
+          <div class="notice-grid" data-field="noticeGrid"></div>
+        </div>
+
+        <div class="metric-grid" data-field="metricGrid"></div>
+
+        <section class="two-column">
+          <div class="panel">
+            <div class="section-head">
+              <h2>Modules</h2>
+              <button type="button" class="ghost-button" data-view-link="writer">문항 작성</button>
+            </div>
+            <div class="module-grid" data-field="moduleGrid"></div>
+          </div>
+          <div class="panel">
+            <div class="section-head">
+              <h2>Deduction Watch</h2>
+              <button type="button" class="ghost-button" data-view-link="evaluation">감점 보기</button>
+            </div>
+            <div data-field="deductionPreview"></div>
+          </div>
+        </section>
+      </section>
+    </template>
+
+    <template id="writerTemplate">
+      <section class="writer-layout">
+        <aside class="question-browser">
+          <div class="panel compact">
+            <label class="field-label">
+              Module
+              <select id="moduleFilter"></select>
+            </label>
+            <label class="field-label">
+              Search
+              <input id="questionSearch" type="search" placeholder="문항번호, 키워드" />
+            </label>
+          </div>
+          <div class="question-list" data-field="questionList"></div>
+        </aside>
+
+        <section class="writer-main">
+          <div class="panel question-hero">
+            <div>
+              <p class="eyebrow" data-field="questionMeta"></p>
+              <h2 data-field="questionTitle"></h2>
+            </div>
+            <div class="score-pills" data-field="scorePills"></div>
+          </div>
+
+          <section class="writer-grid">
+            <div class="panel writer-form">
+              <div class="form-grid">
+                <label class="field-label">
+                  회사명
+                  <input id="companyName" type="text" />
+                </label>
+                <label class="field-label">
+                  산업/섹터
+                  <select id="sectorSelect">
+                    <option value="CH">CH - Chemicals</option>
+                    <option value="GEN">General</option>
+                    <option value="FS">Financial services</option>
+                    <option value="MM">Metals & Mining</option>
+                    <option value="COAL">Coal</option>
+                    <option value="CUSTOM">Custom</option>
+                  </select>
+                </label>
+                <label class="field-label">
+                  글자수 제한
+                  <input id="charLimit" type="number" min="300" max="8000" step="100" />
+                </label>
+              </div>
+              <label class="field-label">
+                핵심 키워드
+                <input id="keywords" type="text" placeholder="예: 전환계획, Scope 1/2, 검증, 이사회" />
+              </label>
+              <label class="field-label">
+                증빙자료 원문
+                <textarea id="evidenceText" rows="11" placeholder="보고서, 검증성명서, 내부 증빙자료에서 관련 문단을 붙여넣으세요."></textarea>
+              </label>
+              <div class="button-row">
+                <button type="button" class="primary-button" id="generateButton">답변 초안 생성</button>
+                <button type="button" class="ghost-button" id="saveDraftButton">현재 문항 저장</button>
+                <span class="char-counter" data-field="charCounter">0자</span>
+              </div>
+            </div>
+
+            <aside class="panel sticky-panel">
+              <div class="section-head">
+                <h2>작성안내 / 평가방법론</h2>
+              </div>
+              <div class="segmented guide-tabs">
+                <button type="button" data-guide-tab="guidance">작성안내</button>
+                <button type="button" data-guide-tab="scoring">평가기준</button>
+                <button type="button" data-guide-tab="allocation">배점</button>
+                <button type="button" data-guide-tab="source">태그/변경</button>
+              </div>
+              <div class="criteria-stack" data-field="criteriaStack"></div>
+              <h3>필요 증빙 / 개선 힌트</h3>
+              <div class="evidence-box" data-field="evidenceChecklist"></div>
+            </aside>
+          </section>
+
+          <section class="writer-grid">
+            <div class="panel">
+              <div class="section-head">
+                <h2>생성 답변 초안</h2>
+                <button type="button" class="ghost-button" id="copyDraftButton">복사</button>
+              </div>
+              <textarea id="draftText" class="draft-box" rows="17"></textarea>
+            </div>
+            <div class="panel">
+              <div class="section-head">
+                <h2>배점 충족 확인</h2>
+                <button type="button" class="ghost-button" id="evaluateDraftButton">다시 확인</button>
+              </div>
+              <div data-field="fulfillmentPanel"></div>
+            </div>
+          </section>
+        </section>
+      </section>
+    </template>
+
+    <template id="evaluationTemplate">
+      <section class="stack">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Pre-evaluation</p>
+              <h2>감점 후보와 개선사항</h2>
+            </div>
+            <div class="button-row">
+              <button type="button" class="ghost-button" data-eval-scope="drafted">작성 문항</button>
+              <button type="button" class="ghost-button" data-eval-scope="all">전체 문항</button>
+              <button id="generateAllButton" type="button" class="primary-button">전체 문항 초안 생성</button>
+            </div>
+          </div>
+          <div class="deduction-table" data-field="deductionTable"></div>
+        </div>
+      </section>
+    </template>
+
+    <template id="evidenceTemplate">
+      <section class="stack">
+        <div class="panel upload-panel">
+          <div>
+            <p class="eyebrow">Evidence Library</p>
+            <h2>증빙자료 텍스트 추출</h2>
+          </div>
+          <input id="fileInput" type="file" multiple accept=".docx,.pptx,.xlsx,.txt,.csv,.json,.md,.pdf" />
+          <button id="extractButton" type="button" class="primary-button">업로드 파일 읽기</button>
+        </div>
+        <div class="panel">
+          <div class="section-head">
+            <h2>추출/붙여넣기 원문</h2>
+            <button id="clearEvidenceButton" type="button" class="ghost-button">비우기</button>
+          </div>
+          <textarea id="evidenceLibraryText" rows="18"></textarea>
+          <div class="file-results" data-field="fileResults"></div>
+        </div>
+      </section>
+    </template>
+
+    <template id="referencesTemplate">
+      <section class="references-layout">
+        <aside class="reference-list panel">
+          <p class="eyebrow">2026 source documents</p>
+          <h2>작성안내·평가방법론</h2>
+          <div data-field="referenceButtons"></div>
+        </aside>
+        <section class="panel reference-viewer">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow" data-field="referenceMeta"></p>
+              <h2 data-field="referenceTitle"></h2>
+            </div>
+          </div>
+          <div class="translation-note" data-field="translationNote"></div>
+          <div class="reference-text" data-field="referenceText"></div>
+        </section>
+      </section>
+    </template>
+
+    <template id="exportTemplate">
+      <section class="stack">
+        <div class="panel">
+          <p class="eyebrow">Export</p>
+          <h2>작성 결과 내보내기</h2>
+          <div class="export-grid">
+            <button type="button" class="primary-button" data-export="csv">문항별 CSV 다운로드</button>
+            <button type="button" class="ghost-button" data-export="json">작업상태 JSON 다운로드</button>
+          </div>
+        </div>
+        <div class="panel">
+          <h2>문항별 작성 현황</h2>
+          <div class="export-table" data-field="exportTable"></div>
+        </div>
+      </section>
+    </template>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
