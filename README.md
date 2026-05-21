@@ -17,10 +17,12 @@ http://127.0.0.1:8780
 
 ## 외부 공개 링크
 
-- 상시 정적 링크: https://raw.githack.com/24josh4281/CDP-Writer-2026/main/index.html
+- 상시 정적 링크: https://raw.githack.com/24josh4281/CDP-Writer-2026/public/index.html
 - GitHub Pages 예정 링크: https://24josh4281.github.io/CDP-Writer-2026/
 
 정적 링크에서는 질문지 탐색, 작성안내/평가기준 확인, 수동 증빙 붙여넣기, 로컬 브라우저 임시저장 기능을 사용할 수 있습니다. 파일 업로드 추출과 GPT 생성은 API 키 보호가 필요하므로 `python server.py`로 실행한 로컬 서버 또는 별도 보안 서버에서만 동작합니다.
+
+GitHub Pages 워크플로는 저장소 설정에서 Pages를 활성화한 뒤 수동 실행하도록 구성되어 있습니다.
 
 ## 포함 데이터
 
