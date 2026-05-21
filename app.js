@@ -22,7 +22,7 @@ const state = {
   drafts: {},
   fileResults: [],
   evaluationScope: "drafted",
-  language: "both",
+  language: "ko",
   guideTab: "guidance",
   referenceKey: "",
 };
@@ -93,20 +93,100 @@ function localizedPair(en, ko) {
   return korean || english;
 }
 
+function uiText(ko, en = ko) {
+  if (state.language === "en") return en;
+  if (state.language === "both" && en !== ko) return `${ko} / ${en}`;
+  return ko;
+}
+
+function sectorDisplayValue(value) {
+  const raw = text(value).trim();
+  const labels = {
+    FULL: { ko: "전체", en: "FULL" },
+    CH: { ko: "화학", en: "CH" },
+    GEN: { ko: "일반", en: "GEN" },
+    FS: { ko: "금융서비스", en: "FS" },
+    MM: { ko: "금속 및 광업", en: "MM" },
+    COAL: { ko: "석탄", en: "COAL" },
+  };
+  const label = labels[raw.toUpperCase()];
+  return label ? uiText(label.ko, label.en) : raw;
+}
+
+function categoryLabel(value) {
+  const raw = text(value).trim();
+  if (state.language === "en") return raw;
+  return raw
+    .replace(/2026\s+FULL\s+CORPORATE/gi, "2026 전체 기업")
+    .replace(/FULL\s+CORPORATE/gi, "전체 기업")
+    .replace(/CORPORATE/gi, "기업");
+}
+
+function sourceFileLabel(value) {
+  const raw = text(value).trim();
+  if (state.language === "en") return raw || "dataset";
+  const lower = raw.toLowerCase();
+  if (lower.includes("questionnaire")) return "CDP 2026 전체 기업 질문지";
+  if (lower.includes("scoring")) return "CDP 2026 평가방법론";
+  if (lower.includes("dataset")) return "데이터셋";
+  return raw || "데이터셋";
+}
+
+function tagLabel(value) {
+  const raw = text(value).trim();
+  const labels = {
+    Chemicals: { ko: "화학", en: "Chemicals" },
+    "Financial services": { ko: "금융서비스", en: "Financial services" },
+    "Oil & Gas": { ko: "석유 및 가스", en: "Oil & Gas" },
+    Coal: { ko: "석탄", en: "Coal" },
+    General: { ko: "일반", en: "General" },
+    Aviation: { ko: "항공", en: "Aviation" },
+    "Capital goods": { ko: "자본재", en: "Capital goods" },
+    "Transport OEMS - EPM": { ko: "운송 OEMS - EPM", en: "Transport OEMS - EPM" },
+    "Transport OEMS": { ko: "운송 OEMS", en: "Transport OEMS" },
+    "Transport services": { ko: "운송 서비스", en: "Transport services" },
+    "Metals & Mining": { ko: "금속 및 광업", en: "Metals & Mining" },
+    "Metals &mining": { ko: "금속 및 광업", en: "Metals & Mining" },
+    Steel: { ko: "철강", en: "Steel" },
+    Ocean: { ko: "해양", en: "Ocean" },
+    "Agricultural commodities": { ko: "농산물 원자재", en: "Agricultural commodities" },
+    Biodiversity: { ko: "생물다양성", en: "Biodiversity" },
+    Plastics: { ko: "플라스틱", en: "Plastics" },
+    "Climate Change": { ko: "기후변화", en: "Climate Change" },
+    "Energy utilities & power generators": { ko: "에너지 유틸리티 및 발전사업자", en: "Energy utilities & power generators" },
+    Forests: { ko: "산림", en: "Forests" },
+    Cement: { ko: "시멘트", en: "Cement" },
+    "Food, beverage & tobacco": { ko: "식품·음료·담배", en: "Food, beverage & tobacco" },
+    "Paper & forestry": { ko: "제지 및 임업", en: "Paper & forestry" },
+    "Real estate": { ko: "부동산", en: "Real estate" },
+    Construction: { ko: "건설", en: "Construction" },
+  };
+  const label = labels[raw];
+  return label ? uiText(label.ko, label.en) : raw;
+}
+
+function safeKoreanText(en, ko) {
+  const curated = polishedKoreanOverride(en);
+  if (curated) return curated;
+  const candidate = text(ko).trim();
+  return shouldRegenerateKorean(candidate) ? "" : candidate;
+}
+
 function localizedHtml(en, ko) {
   const english = readableMethodologyText(en);
-  const koreanCandidate = text(ko).trim();
-  const korean = readableMethodologyText(shouldRegenerateKorean(koreanCandidate) ? helperKoreanText(en) : koreanCandidate || helperKoreanText(en));
-  if (state.language === "ko") return `<div class="localized-block ko">${escapeHtml(korean || english)}</div>`;
+  const korean = readableMethodologyText(safeKoreanText(en, ko));
+  const pending = translationPendingText(english);
+  if (state.language === "ko") return `<div class="localized-block ko">${escapeHtml(korean || pending)}</div>`;
   if (state.language === "en") return `<div class="localized-block en">${escapeHtml(english || korean)}</div>`;
   return `
-    <div class="localized-block ko"><strong>국문</strong><br />${escapeHtml(korean || english)}</div>
+    <div class="localized-block ko"><strong>국문</strong><br />${escapeHtml(korean || pending)}</div>
     <div class="localized-block en"><strong>English</strong><br />${escapeHtml(english || korean)}</div>
   `;
 }
 
 function questionTitle(row) {
-  return localizedPair(row.title_en || row.title, row.title_ko);
+  const english = row.title_en || row.title;
+  return localizedPair(english, safeKoreanText(english, row.title_ko));
 }
 
 function moduleTitle(module) {
@@ -138,14 +218,14 @@ function readableMethodologyText(value) {
     .replace(/Managementdenominator/g, "Management denominator")
     .replace(/Leadershipnumerator/g, "Leadership numerator")
     .replace(/Leadershipdenominator/g, "Leadership denominator")
-    .replace(/공시numerator/g, "공시 numerator")
-    .replace(/공시denominator/g, "공시 denominator")
-    .replace(/인식numerator/g, "인식 numerator")
-    .replace(/인식denominator/g, "인식 denominator")
-    .replace(/관리numerator/g, "관리 numerator")
-    .replace(/관리denominator/g, "관리 denominator")
-    .replace(/리더십numerator/g, "리더십 numerator")
-    .replace(/리더십denominator/g, "리더십 denominator")
+    .replace(/공시numerator/g, "공시 분자")
+    .replace(/공시denominator/g, "공시 분모")
+    .replace(/인식numerator/g, "인식 분자")
+    .replace(/인식denominator/g, "인식 분모")
+    .replace(/관리numerator/g, "관리 분자")
+    .replace(/관리denominator/g, "관리 분모")
+    .replace(/리더십numerator/g, "리더십 분자")
+    .replace(/리더십denominator/g, "리더십 분모")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -154,7 +234,21 @@ function readableMethodologyText(value) {
 function shouldRegenerateKorean(value) {
   const source = text(value);
   if (!source.trim()) return true;
-  return /제공하십시오\s+[a-zA-Z]|조직s|사업es|프로세스es|리스크and|기회 specific|financial planning|To define your|How this time horizon|Because the timing|provide details/i.test(source);
+  const latinWords = source.match(/\b[A-Za-z]{4,}\b/g) || [];
+  const hangulChars = source.match(/[가-힣]/g) || [];
+  const allowedLatin = latinWords.filter((word) => !/^(CDP|TCFD|TNFD|IFRS|ESRS|GHG|Scope|SBTi|RE100|PCAF|CAPEX|OPEX|CO2e?|tCO2e|USD)$/i.test(word));
+  if (allowedLatin.length > 10 && allowedLatin.length > Math.max(8, hangulChars.length / 18)) return true;
+  return /제공하십시오\s+[a-zA-Z]|귀사\s+has|조직s|사업es|프로세스es|리스크and|기회 specific|financial planning|To define your|How this time horizon|Because the timing|provide details|This column|If you select|Select [“"']|Does your|What is|How does|Awareness scoring|Disclosure scoring|Management scoring|Leadership scoring/i.test(source);
+}
+
+function translationPendingText(english) {
+  return [
+    "국문 번역 검토 필요",
+    "이 영역은 아직 전체 문장 번역이 완료되지 않아, 일부 단어만 바뀐 국문을 표시하지 않습니다.",
+    "",
+    "영문 원문",
+    english,
+  ].join("\n");
 }
 
 function polishedKoreanOverride(value) {
@@ -163,8 +257,8 @@ function polishedKoreanOverride(value) {
 
   if (lower.includes("from (years) (column 1)") && lower.includes("tcfd and tnfd position on time horizons")) {
     return [
-      "From (years)(열 1) 및 To (years)(열 3)",
-      "단기·중기·장기 시간범위를 정의하기 위해 ‘From’ 및 ‘To’ 연도 열에 각 시간범위의 길이를 입력하십시오. 예를 들어 5년부터 10년까지, 또는 12년부터 25년까지와 같이 작성합니다.",
+      "시작연도(열 1) 및 종료연도(열 3)",
+      "단기·중기·장기 시간범위를 정의하기 위해 ‘시작연도’ 및 ‘종료연도’ 열에 각 시간범위의 길이를 입력하십시오. 예를 들어 5년부터 10년까지, 또는 12년부터 25년까지와 같이 작성합니다.",
       "",
       "이 시간범위가 전략 및/또는 재무계획과 어떻게 연결되는지(열 4)",
       "해당 시간범위를 선택한 이유를 설명하고, 이 시간범위의 사용이 귀사의 전략 및/또는 재무계획을 어떻게 뒷받침하는지 설명하십시오.",
@@ -191,7 +285,7 @@ function polishedKoreanOverride(value) {
     return [
       "‘단기’, ‘중기’, ‘장기’ 행에 서로 연속되는 시간범위를 입력하면 3점입니다.",
       "예: 단기 0~2년, 중기 3~9년, 장기 10년 이상 또는 단기 0~3년, 중기 3~10년, 장기 10년 이상과 같이 작성할 수 있습니다.",
-      "‘장기 시간범위가 개방형입니까?’ 열에서 ‘No’를 선택한 경우, 인식 점수를 받으려면 ‘To (years)’ 열을 반드시 작성해야 합니다.",
+      "‘장기 시간범위가 개방형입니까?’ 열에서 ‘아니요’를 선택한 경우, 인식 점수를 받으려면 ‘종료연도’ 열을 반드시 작성해야 합니다.",
       "이 문항은 최대 3/3점까지 받을 수 있습니다.",
     ].join("\n");
   }
@@ -264,18 +358,22 @@ function levelMeta(label) {
   if (lower.includes("awareness")) return { code: "A", ko: "인식", en: "Awareness" };
   if (lower.includes("management")) return { code: "M", ko: "관리", en: "Management" };
   if (lower.includes("leadership")) return { code: "L", ko: "리더십", en: "Leadership" };
+  if (label.includes("공시")) return { code: "D", ko: "공시", en: "Disclosure" };
+  if (label.includes("인식")) return { code: "A", ko: "인식", en: "Awareness" };
+  if (label.includes("관리")) return { code: "M", ko: "관리", en: "Management" };
+  if (label.includes("리더십")) return { code: "L", ko: "리더십", en: "Leadership" };
   return { code: "Q", ko: label, en: label };
 }
 
 function parseScoringBlocks(source) {
   const clean = readableMethodologyText(source).replace(/\n\d+(?:\.\d+)+\s*[–-]\s*.+?point allocations for all sectors[\s\S]*$/i, "");
-  const headingRegex = /(?:^|\n)(\d+(?:\.\d+)+)\s*[–-]\s*(.+?)\s+scoring criteria for all sectors\s*/gi;
+  const headingRegex = /(?:^|\n)(\d+(?:\.\d+)+)\s*[–-]\s*(.+?)\s+(?:scoring criteria for all sectors|평가기준\s*-\s*전체 섹터|금융서비스 기업 평가기준)\s*/gi;
   const headings = [...clean.matchAll(headingRegex)];
   return headings.map((heading, index) => {
     const start = heading.index + heading[0].length;
     const end = index + 1 < headings.length ? headings[index + 1].index : clean.length;
     const body = clean.slice(start, end).trim();
-    const sections = [...body.matchAll(/(Disclosure|Awareness|Management|Leadership) scoring criteria\s*([\s\S]*?)(?=\n(?:Disclosure|Awareness|Management|Leadership) scoring criteria|\n\d+(?:\.\d+)+\s*[–-]|\s*$)/gi)].map((match) => {
+    const sections = [...body.matchAll(/((?:Disclosure|Awareness|Management|Leadership)\s+scoring criteria|(?:공시|인식|관리|리더십)\s+평가기준)\s*([\s\S]*?)(?=\n(?:(?:Disclosure|Awareness|Management|Leadership)\s+scoring criteria|(?:공시|인식|관리|리더십)\s+평가기준)|\n\d+(?:\.\d+)+\s*[–-]|\s*$)/gi)].map((match) => {
       const meta = levelMeta(match[1]);
       const criteria = readableMethodologyText(match[2]);
       const max = criteria.match(/maximum of\s+([\d.]+\/[\d.]+|[\d.]+)\s+points?/i)?.[1] || criteria.match(/-\s*([\d.]+)\s+points?/i)?.[1] || "기준";
@@ -359,13 +457,14 @@ function issueOptions() {
 
 function issueFilterLabel(issue) {
   const labels = {
-    "Climate Change": "기후변화 / Climate Change",
-    Water: "물 / Water",
-    Forests: "산림 / Forests",
-    Biodiversity: "생물다양성 / Biodiversity",
-    Plastics: "플라스틱 / Plastics",
+    "Climate Change": { ko: "기후변화", en: "Climate Change" },
+    Water: { ko: "물", en: "Water" },
+    Forests: { ko: "산림", en: "Forests" },
+    Biodiversity: { ko: "생물다양성", en: "Biodiversity" },
+    Plastics: { ko: "플라스틱", en: "Plastics" },
   };
-  return labels[issue] || issue;
+  const label = labels[issue];
+  return label ? uiText(label.ko, label.en) : issue;
 }
 
 function compactTagList(items, limit = 5) {
@@ -392,10 +491,10 @@ function criteriaSections(checklist) {
   }
   const scoringBlocks = parseScoringBlocks(source);
   if (scoringBlocks.length) {
-    const preferred = scoringBlocks.find((block) => block.issue.toLowerCase().includes("climate")) || scoringBlocks[0];
+    const preferred = scoringBlocks.find((block) => /climate|기후/.test(block.issue.toLowerCase())) || scoringBlocks[0];
     return preferred.sections.map((section) => ({
       level: section.code,
-      name: section.en,
+      name: state.language === "en" ? section.en : section.ko,
       points: section.points,
       criteria: section.criteria,
     }));
@@ -414,7 +513,8 @@ function requiredSignals(criteria) {
 
 function scoreDraft(row, draft, evidence, keywords) {
   const combined = normalize([draft, evidence, keywords].join(" "));
-  return criteriaSections(row.fullScoreChecklist || row.full_score_checklist).map((section) => {
+  const checklist = state.language === "en" ? row.fullScoreChecklist || row.full_score_checklist : row.fullScoreChecklist_ko || row.scoring_ko || row.fullScoreChecklist || row.full_score_checklist;
+  return criteriaSections(checklist).map((section) => {
     const signals = requiredSignals(section.criteria);
     const matched = signals.filter((signal) => {
       if (!signal.terms.length) return combined.length >= 120;
@@ -553,9 +653,9 @@ function renderDashboard() {
   const deductions = deductionRows("drafted");
   fragment.querySelector('[data-field="datasetTitle"]').textContent = localizedPair(state.dataset?.title, state.dataset?.title_ko) || "CDP methodology";
   fragment.querySelector('[data-field="noticeGrid"]').innerHTML = [
-    ["Sector", state.dataset?.sector || state.sector],
-    ["Generated", state.dataset?.generatedAt || "-"],
-    ["Mode", "Answer + QA"],
+    [uiText("섹터", "Sector"), sectorDisplayValue(state.dataset?.sector || state.sector)],
+    [uiText("생성일", "Generated"), state.dataset?.generatedAt || "-"],
+    [uiText("모드", "Mode"), uiText("작성 + 검토", "Answer + QA")],
   ]
     .map(([label, value]) => `<div class="status-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
     .join("");
@@ -575,8 +675,8 @@ function renderDashboard() {
           <span class="eyebrow">${escapeHtml(module.id)}</span>
           <h3>${escapeHtml(moduleTitle(module))}</h3>
           <div class="tag-row">
-            <span class="tag">${module.count} questions</span>
-            <span class="tag">${module.sector} sector</span>
+            <span class="tag">${module.count}${escapeHtml(uiText("개 문항", " questions"))}</span>
+            <span class="tag">${module.sector}${escapeHtml(uiText("개 산업특수", " sector-specific"))}</span>
           </div>
           <div class="progress-line"><span style="width:${pct}%"></span></div>
         </button>
@@ -610,7 +710,7 @@ function renderQuestionList() {
           <span class="question-title">${escapeHtml(questionTitle(row))}</span>
           <div class="tag-row">
             <span class="status-badge ${statusClass(status.code)}">${escapeHtml(status.label)}</span>
-            ${text(row.sectorFlag || row.sector_flag).trim() ? '<span class="tag">Industry</span>' : ""}
+            ${text(row.sectorFlag || row.sector_flag).trim() ? `<span class="tag">${escapeHtml(uiText("산업 특수", "Industry"))}</span>` : ""}
           </div>
         </button>
       `;
@@ -636,6 +736,7 @@ function renderCriteriaStack(row) {
 
 function renderScoringCards(row) {
   const blocks = parseScoringBlocks(row.scoring_en || row.fullScoreChecklist || row.full_score_checklist);
+  const koBlocks = parseScoringBlocks(row.scoring_ko || row.fullScoreChecklist_ko || "");
   if (!blocks.length) {
     return `<article class="criteria-card"><h3>평가기준</h3><div class="criteria-text">${localizedHtml(row.scoring_en || row.fullScoreChecklist || row.full_score_checklist, row.scoring_ko || row.fullScoreChecklist_ko)}</div></article>`;
   }
@@ -646,8 +747,10 @@ function renderScoringCards(row) {
           <h3>${escapeHtml(block.question)} · ${escapeHtml(issueLabel(block.issue))}</h3>
           <div class="criterion-grid">
             ${block.sections
-              .map((section) => {
-                const koBody = helperKoreanText(section.criteria);
+              .map((section, sectionIndex) => {
+                const koSection = koBlocks.find((candidate) => candidate.question === block.question)?.sections?.[sectionIndex];
+                const koCandidate = koSection?.criteria || "";
+                const koBody = safeKoreanText(section.criteria, koCandidate) || translationPendingText(readableMethodologyText(section.criteria));
                 const enBody = readableMethodologyText(section.criteria);
                 const body =
                   state.language === "ko"
@@ -685,7 +788,7 @@ function renderAllocationTables(row) {
       : ["이슈", "D 분자", "D 분모", "A 분자", "A 분모", "M 분자", "M 분모", "L 분자", "L 분모"];
   return `
     <article class="criteria-card">
-      <h3>점수 배분 / Point Allocation</h3>
+      <h3>${escapeHtml(uiText("점수 배분", "Point Allocation"))}</h3>
       <div class="allocation-table-wrap">
         <table class="table-like allocation-table">
           <thead>
@@ -712,7 +815,7 @@ function renderAllocationTables(row) {
           </tbody>
         </table>
       </div>
-      <p class="table-note">분자는 충족 예상 점수, 분모는 해당 평가수준의 최대 배점을 뜻합니다. D/A/M/L은 Disclosure/Awareness/Management/Leadership입니다.</p>
+      <p class="table-note">분자는 충족 예상 점수, 분모는 해당 평가수준의 최대 배점을 뜻합니다. D/A/M/L은 각각 공시/인식/관리/리더십 평가수준입니다.</p>
     </article>
   `;
 }
@@ -745,25 +848,25 @@ function renderWriter() {
   const modules = moduleGroups();
   const moduleFilter = fragment.querySelector("#moduleFilter");
   const issueFilter = fragment.querySelector("#issueFilter");
-  moduleFilter.innerHTML = `<option value="all">All modules</option>${modules
+  moduleFilter.innerHTML = `<option value="all">${escapeHtml(uiText("전체 모듈", "All modules"))}</option>${modules
     .map((module) => `<option value="${escapeHtml(module.id)}">${escapeHtml(module.id)} · ${escapeHtml(moduleTitle(module))}</option>`)
     .join("")}`;
   moduleFilter.value = state.selectedModule;
-  issueFilter.innerHTML = `<option value="all">All issues</option>${issueOptions()
+  issueFilter.innerHTML = `<option value="all">${escapeHtml(uiText("전체 이슈", "All issues"))}</option>${issueOptions()
     .map((issue) => `<option value="${escapeHtml(issue)}">${escapeHtml(issueFilterLabel(issue))}</option>`)
     .join("")}`;
   issueFilter.value = state.selectedIssue;
   fragment.querySelector("#questionSearch").value = state.search;
   fragment.querySelector('[data-field="questionList"]').innerHTML = renderQuestionList();
-  fragment.querySelector('[data-field="questionMeta"]').textContent = `${moduleId(row)} · ${qn} · ${row.category || ""}`;
+  fragment.querySelector('[data-field="questionMeta"]').textContent = `${moduleId(row)} · ${qn} · ${categoryLabel(row.category || "")}`;
   fragment.querySelector('[data-field="questionTitle"]').textContent = questionTitle(row);
   const sourcePages = Array.isArray(row.sourcePages) ? row.sourcePages.join(" - ") : "";
   const issueTags = compactTagList(rowIssues(row).map(issueFilterLabel), 4);
-  const sectorTags = compactTagList(Array.isArray(row.sectorTags) ? row.sectorTags : [], 4);
+  const sectorTags = compactTagList((Array.isArray(row.sectorTags) ? row.sectorTags : []).map(tagLabel), 4);
   fragment.querySelector('[data-field="questionSource"]').innerHTML = `
-    <span>Source: ${escapeHtml(row.sourceFile || "dataset")}${sourcePages ? ` · p.${escapeHtml(sourcePages)}` : ""}</span>
-    ${issueTags ? `<span>Issue: ${escapeHtml(issueTags)}</span>` : ""}
-    ${sectorTags ? `<span>Sector: ${escapeHtml(sectorTags)}</span>` : ""}
+    <span>${escapeHtml(uiText("출처", "Source"))}: ${escapeHtml(sourceFileLabel(row.sourceFile || "dataset"))}${sourcePages ? ` · ${escapeHtml(uiText("쪽", "p."))}${escapeHtml(sourcePages)}` : ""}</span>
+    ${issueTags ? `<span>${escapeHtml(uiText("이슈", "Issue"))}: ${escapeHtml(issueTags)}</span>` : ""}
+    ${sectorTags ? `<span>${escapeHtml(uiText("섹터", "Sector"))}: ${escapeHtml(sectorTags)}</span>` : ""}
   `;
   const den = row.denominators || {};
   fragment.querySelector('[data-field="scorePills"]').innerHTML = ["D", "A", "M", "L"]
@@ -845,17 +948,18 @@ function renderEvidence() {
 
 function referenceTitle(ref) {
   const labels = {
-    questionnaire_overview: "Questionnaire Overview / 질문지 개요",
-    questionnaire_setup: "Questionnaire Setup / 질문지 설정",
-    glossary: "Glossary / 용어집",
-    scoring_intro: "Scoring Introduction / 평가방법론 소개",
-    scoring_changes: "Scoring Changes / 평가 변경사항",
-    climate_weightings: "Climate Change Weightings / 기후변화 평가 가중치",
-    climate_essential: "Climate Essential Criteria / 기후변화 필수조건",
-    water_essential: "Water Essential Criteria / 물 안보 필수조건",
-    industry_classification: "Industry Impact Classification / 산업 영향 분류",
+    questionnaire_overview: { ko: "질문지 개요", en: "Questionnaire Overview" },
+    questionnaire_setup: { ko: "질문지 설정", en: "Questionnaire Setup" },
+    glossary: { ko: "용어집", en: "Glossary" },
+    scoring_intro: { ko: "평가방법론 소개", en: "Scoring Introduction" },
+    scoring_changes: { ko: "평가 변경사항", en: "Scoring Changes" },
+    climate_weightings: { ko: "기후변화 평가 가중치", en: "Climate Change Weightings" },
+    climate_essential: { ko: "기후변화 필수조건", en: "Climate Essential Criteria" },
+    water_essential: { ko: "물 안보 필수조건", en: "Water Essential Criteria" },
+    industry_classification: { ko: "산업 영향 분류", en: "Industry Impact Classification" },
   };
-  return labels[ref.key] || ref.filename;
+  const label = labels[ref.key];
+  return label ? uiText(label.ko, label.en) : ref.filename;
 }
 
 function renderReferences() {

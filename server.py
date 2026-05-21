@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import io
 import json
 import mimetypes
@@ -203,9 +204,27 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def send_compressed_file(self) -> bool:
+        if "gzip" not in self.headers.get("Accept-Encoding", "").lower():
+            return False
+        path = Path(self.translate_path(self.path.split("?", 1)[0]))
+        if not path.is_file() or path.suffix.lower() not in {".html", ".js", ".css", ".json"}:
+            return False
+        data = gzip.compress(path.read_bytes())
+        self.send_response(200)
+        self.send_header("Content-Type", mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+        self.send_header("Content-Encoding", "gzip")
+        self.send_header("Vary", "Accept-Encoding")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+        return True
+
     def do_GET(self) -> None:
         if self.path in {"/", ""}:
             self.path = "/index.html"
+        if self.send_compressed_file():
+            return
         return super().do_GET()
 
     def do_POST(self) -> None:

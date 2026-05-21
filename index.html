@@ -3,24 +3,24 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>CDP Writer 2026</title>
+    <title>CDP 작성기 2026</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <header class="app-header">
       <div>
-        <p class="eyebrow">CDP Evaluation & Answer Studio</p>
-        <h1>CDP Writer 2026</h1>
+        <p class="eyebrow">CDP 평가 및 답변 작성 도구</p>
+        <h1>CDP 작성기 2026</h1>
       </div>
       <div class="header-actions">
         <select id="datasetSelect" title="평가기준 데이터셋">
-          <option value="./data/cdp_2026_full_dataset.json">2026 Full Corporate</option>
-          <option value="./data/cdp_cc_ch_model_answers.json">2025 CC CH pilot</option>
+          <option value="./data/cdp_2026_full_dataset.json">2026 전체 기업 질문지</option>
+          <option value="./data/cdp_cc_ch_model_answers.json">2025 기후변화 화학 파일럿</option>
         </select>
         <div class="segmented" aria-label="언어 보기">
-          <button type="button" data-language="ko">한국어</button>
-          <button type="button" data-language="en">English</button>
-          <button type="button" data-language="both" class="is-active">한/영</button>
+          <button type="button" data-language="ko" class="is-active">한국어</button>
+          <button type="button" data-language="en">영문</button>
+          <button type="button" data-language="both">원문 비교</button>
         </div>
         <button id="exportJsonButton" type="button" class="ghost-button">JSON 내보내기</button>
         <button id="exportCsvButton" type="button" class="primary-button">CSV 내보내기</button>
@@ -28,17 +28,17 @@
     </header>
 
     <main class="app-layout">
-      <nav class="side-nav" aria-label="Main">
-        <button class="nav-button is-active" type="button" data-view="dashboard">Overview</button>
-        <button class="nav-button" type="button" data-view="writer">Writer</button>
-        <button class="nav-button" type="button" data-view="evaluation">Evaluation</button>
-        <button class="nav-button" type="button" data-view="references">References</button>
-        <button class="nav-button" type="button" data-view="evidence">Evidence</button>
-        <button class="nav-button" type="button" data-view="export">Export</button>
+      <nav class="side-nav" aria-label="주요 메뉴">
+        <button class="nav-button is-active" type="button" data-view="dashboard">대시보드</button>
+        <button class="nav-button" type="button" data-view="writer">작성</button>
+        <button class="nav-button" type="button" data-view="evaluation">평가</button>
+        <button class="nav-button" type="button" data-view="references">자료</button>
+        <button class="nav-button" type="button" data-view="evidence">증빙</button>
+        <button class="nav-button" type="button" data-view="export">내보내기</button>
       </nav>
 
       <section id="app" class="workspace">
-        <div class="loading-panel">Loading CDP methodology data...</div>
+        <div class="loading-panel">CDP 평가방법론 데이터를 불러오는 중입니다...</div>
       </section>
     </main>
 
@@ -46,7 +46,7 @@
       <section class="dashboard">
         <div class="notice">
           <div>
-            <p class="eyebrow">Workspace</p>
+            <p class="eyebrow">작업공간</p>
             <h2 data-field="datasetTitle"></h2>
           </div>
           <div class="notice-grid" data-field="noticeGrid"></div>
@@ -57,14 +57,14 @@
         <section class="two-column">
           <div class="panel">
             <div class="section-head">
-              <h2>Modules</h2>
+              <h2>모듈</h2>
               <button type="button" class="ghost-button" data-view-link="writer">문항 작성</button>
             </div>
             <div class="module-grid" data-field="moduleGrid"></div>
           </div>
           <div class="panel">
             <div class="section-head">
-              <h2>Deduction Watch</h2>
+              <h2>감점 점검</h2>
               <button type="button" class="ghost-button" data-view-link="evaluation">감점 보기</button>
             </div>
             <div data-field="deductionPreview"></div>
@@ -78,7 +78,7 @@
         <aside class="question-browser">
           <div class="panel compact">
             <label class="field-label">
-              Module
+              모듈
               <select id="moduleFilter"></select>
             </label>
             <label class="field-label">
@@ -86,7 +86,7 @@
               <select id="issueFilter"></select>
             </label>
             <label class="field-label">
-              Search
+              검색
               <input id="questionSearch" type="search" placeholder="문항번호, 키워드" />
             </label>
           </div>
@@ -113,12 +113,12 @@
                 <label class="field-label">
                   산업/섹터
                   <select id="sectorSelect">
-                    <option value="CH">CH - Chemicals</option>
-                    <option value="GEN">General</option>
-                    <option value="FS">Financial services</option>
-                    <option value="MM">Metals & Mining</option>
-                    <option value="COAL">Coal</option>
-                    <option value="CUSTOM">Custom</option>
+                    <option value="CH">화학</option>
+                    <option value="GEN">일반</option>
+                    <option value="FS">금융서비스</option>
+                    <option value="MM">금속 및 광업</option>
+                    <option value="COAL">석탄</option>
+                    <option value="CUSTOM">사용자 지정</option>
                   </select>
                 </label>
                 <label class="field-label">
@@ -182,7 +182,7 @@
         <div class="panel">
           <div class="section-head">
             <div>
-              <p class="eyebrow">Pre-evaluation</p>
+              <p class="eyebrow">사전평가</p>
               <h2>감점 후보와 개선사항</h2>
             </div>
             <div class="button-row">
@@ -200,7 +200,7 @@
       <section class="stack">
         <div class="panel upload-panel">
           <div>
-            <p class="eyebrow">Evidence Library</p>
+            <p class="eyebrow">증빙자료 보관함</p>
             <h2>증빙자료 텍스트 추출</h2>
           </div>
           <input id="fileInput" type="file" multiple accept=".docx,.pptx,.xlsx,.txt,.csv,.json,.md,.pdf" />
@@ -220,7 +220,7 @@
     <template id="referencesTemplate">
       <section class="references-layout">
         <aside class="reference-list panel">
-          <p class="eyebrow">2026 source documents</p>
+          <p class="eyebrow">2026 원본 자료</p>
           <h2>작성안내·평가방법론</h2>
           <div data-field="referenceButtons"></div>
         </aside>
@@ -240,7 +240,7 @@
     <template id="exportTemplate">
       <section class="stack">
         <div class="panel">
-          <p class="eyebrow">Export</p>
+          <p class="eyebrow">내보내기</p>
           <h2>작성 결과 내보내기</h2>
           <div class="export-grid">
             <button type="button" class="primary-button" data-export="csv">문항별 CSV 다운로드</button>

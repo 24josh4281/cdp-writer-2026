@@ -489,6 +489,12 @@ def build_dataset() -> dict[str, Any]:
 def main() -> None:
     OUT.parent.mkdir(parents=True, exist_ok=True)
     dataset = build_dataset()
+    try:
+        from improve_korean_dataset import improve_dataset_object
+
+        dataset = improve_dataset_object(dataset)
+    except Exception as exc:
+        print(f"Korean translation improvement skipped: {exc}")
     OUT.write_text(json.dumps(dataset, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({"output": str(OUT), "rows": dataset["qualitativeCount"], "references": len(dataset["references"])}, ensure_ascii=False, indent=2))
 
