@@ -209,6 +209,22 @@ textarea {
   margin: 0;
 }
 
+.question-source {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.question-source span {
+  border: 1px solid var(--line);
+  background: var(--soft);
+  padding: 4px 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .notice-grid,
 .metric-grid,
 .module-grid,

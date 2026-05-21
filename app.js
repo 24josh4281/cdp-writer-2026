@@ -10,6 +10,7 @@ const state = {
   rows: [],
   activeView: "dashboard",
   selectedModule: "all",
+  selectedIssue: "all",
   selectedQuestion: "",
   search: "",
   company: "회사명",
@@ -292,6 +293,41 @@ function moduleGroups() {
   return [...map.values()].sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true }));
 }
 
+function rowIssues(row) {
+  const issues = Array.isArray(row.issues) ? row.issues : [];
+  if (issues.length) return issues;
+  const haystack = normalize([row.tags, row.title, row.scoring_en, row.fullScoreChecklist].join(" "));
+  return ["Climate Change", "Water", "Forests", "Biodiversity", "Plastics"].filter((issue) => haystack.includes(issue.toLowerCase()));
+}
+
+function issueOptions() {
+  const order = ["Climate Change", "Water", "Forests", "Biodiversity", "Plastics"];
+  const available = new Set(state.rows.flatMap((row) => rowIssues(row)));
+  return order.filter((issue) => available.has(issue));
+}
+
+function issueFilterLabel(issue) {
+  const labels = {
+    "Climate Change": "기후변화 / Climate Change",
+    Water: "물 / Water",
+    Forests: "산림 / Forests",
+    Biodiversity: "생물다양성 / Biodiversity",
+    Plastics: "플라스틱 / Plastics",
+  };
+  return labels[issue] || issue;
+}
+
+function compactTagList(items, limit = 5) {
+  const values = [...new Set((items || []).map((item) => text(item).trim()).filter(Boolean))];
+  if (values.length <= limit) return values.join(", ");
+  return `${values.slice(0, limit).join(", ")} +${values.length - limit}`;
+}
+
+function passesIssueFilter(row) {
+  if (state.selectedIssue === "all") return true;
+  return rowIssues(row).some((issue) => issue.toLowerCase() === state.selectedIssue.toLowerCase());
+}
+
 function criteriaSections(checklist) {
   const source = text(checklist);
   const matches = [...source.matchAll(/(^|\n)([DAML])\s+([^\n(]+)\(([^)]+)\)\n-?\s*([\s\S]*?)(?=\n\n[DAML]\s+[^\n(]+\(|$)/g)];
@@ -504,6 +540,7 @@ function filteredQuestions() {
   const search = normalize(state.search);
   return state.rows.filter((row) => {
     if (state.selectedModule !== "all" && moduleId(row) !== state.selectedModule) return false;
+    if (!passesIssueFilter(row)) return false;
     if (!search) return true;
     return normalize([questionNumber(row), row.title, row.title_ko, row.category, row.module, row.module_ko].join(" ")).includes(search);
   });
@@ -656,14 +693,27 @@ function renderWriter() {
   const fragment = cloneTemplate("#writerTemplate");
   const modules = moduleGroups();
   const moduleFilter = fragment.querySelector("#moduleFilter");
+  const issueFilter = fragment.querySelector("#issueFilter");
   moduleFilter.innerHTML = `<option value="all">All modules</option>${modules
     .map((module) => `<option value="${escapeHtml(module.id)}">${escapeHtml(module.id)} · ${escapeHtml(moduleTitle(module))}</option>`)
     .join("")}`;
   moduleFilter.value = state.selectedModule;
+  issueFilter.innerHTML = `<option value="all">All issues</option>${issueOptions()
+    .map((issue) => `<option value="${escapeHtml(issue)}">${escapeHtml(issueFilterLabel(issue))}</option>`)
+    .join("")}`;
+  issueFilter.value = state.selectedIssue;
   fragment.querySelector("#questionSearch").value = state.search;
   fragment.querySelector('[data-field="questionList"]').innerHTML = renderQuestionList();
   fragment.querySelector('[data-field="questionMeta"]').textContent = `${moduleId(row)} · ${qn} · ${row.category || ""}`;
   fragment.querySelector('[data-field="questionTitle"]').textContent = questionTitle(row);
+  const sourcePages = Array.isArray(row.sourcePages) ? row.sourcePages.join(" - ") : "";
+  const issueTags = compactTagList(rowIssues(row).map(issueFilterLabel), 4);
+  const sectorTags = compactTagList(Array.isArray(row.sectorTags) ? row.sectorTags : [], 4);
+  fragment.querySelector('[data-field="questionSource"]').innerHTML = `
+    <span>Source: ${escapeHtml(row.sourceFile || "dataset")}${sourcePages ? ` · p.${escapeHtml(sourcePages)}` : ""}</span>
+    ${issueTags ? `<span>Issue: ${escapeHtml(issueTags)}</span>` : ""}
+    ${sectorTags ? `<span>Sector: ${escapeHtml(sectorTags)}</span>` : ""}
+  `;
   const den = row.denominators || {};
   fragment.querySelector('[data-field="scorePills"]').innerHTML = ["D", "A", "M", "L"]
     .map((level) => `<span>${level} ${escapeHtml(formatScore(den[level]))}</span>`)
@@ -1018,6 +1068,12 @@ document.addEventListener("change", (event) => {
     state.selectedQuestion = rows[0] ? questionNumber(rows[0]) : state.selectedQuestion;
     renderWriter();
   }
+  if (target.id === "issueFilter") {
+    state.selectedIssue = target.value;
+    const rows = filteredQuestions();
+    state.selectedQuestion = rows[0] ? questionNumber(rows[0]) : state.selectedQuestion;
+    renderWriter();
+  }
   if (target.id === "sectorSelect") state.sector = target.value;
 });
 
@@ -1032,6 +1088,7 @@ async function loadDataset(url) {
   state.rows = dataset.qualitativeRows || [];
   state.selectedQuestion = state.rows[0] ? questionNumber(state.rows[0]) : "";
   state.selectedModule = "all";
+  state.selectedIssue = "all";
   state.referenceKey = dataset.references?.[0]?.key || "";
   state.activeView = location.hash.replace("#", "") || "dashboard";
   if (!["dashboard", "writer", "evaluation", "references", "evidence", "export"].includes(state.activeView)) {
