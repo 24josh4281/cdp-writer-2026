@@ -15,8 +15,11 @@ flowchart LR
   A["2026 CDP 데이터셋"] --> B["문항 탐색"]
   C["기업 증빙자료"] --> D["텍스트 추출 API"]
   D --> E["증빙 보관함"]
-  B --> F["답변 초안 생성"]
+  B --> F["규칙 기반 답변 초안 생성"]
+  B --> J["GPT 답변 생성 API"]
   E --> F
+  E --> J
+  J --> F
   F --> G["D/A/M/L 충족 점검"]
   G --> H["감점 후보"]
   H --> I["CSV/JSON 내보내기"]
@@ -39,6 +42,14 @@ flowchart LR
 - 결과는 `충족 가능`, `부분 보완 필요`, `보완 필요`로 표시합니다.
 - 이 결과는 사전평가 보조이며 공식 점수 확정이 아닙니다.
 
+## GPT Generation
+
+- 브라우저는 문항번호, 모듈, 국문/영문 작성안내, 평가기준, 배점, 증빙자료, 키워드를 `/api/generate`로 보냅니다.
+- `server.py`는 `OPENAI_API_KEY` 환경변수로만 OpenAI Responses API를 호출합니다.
+- API 키는 HTML, JavaScript, JSON 데이터셋, GitHub 저장소에 저장하지 않습니다.
+- 증빙에 없는 수치, 날짜, 목표, 검증 여부는 자동으로 단정하지 않고 대괄호 placeholder로 남기도록 지시합니다.
+- GPT 생성 후에도 기존 D/A/M/L 충족 점검을 다시 실행합니다.
+
 ## Persistence Design
 
 - 작업 상태는 브라우저 탭의 `sessionStorage`에 자동 임시저장합니다.
@@ -56,9 +67,15 @@ flowchart LR
 - TXT/CSV/JSON/MD: 인코딩 감지 후 텍스트 추출
 - 업로드 방어선: 허용 확장자, 요청 크기, 개별 파일 크기, 파일 수, 압축 해제 크기, PDF 페이지 수, 추출 텍스트 길이 제한
 
+## Public Link Design
+
+- GitHub Pages 배포 워크플로를 제공해 상시 정적 링크를 유지합니다.
+- 정적 링크에서는 데이터셋 탐색, 작성안내/평가기준 확인, 수동 증빙 붙여넣기, 브라우저 임시저장이 가능합니다.
+- 파일 추출과 GPT 생성은 서버 기능이므로 로컬 서버 또는 별도 보안 서버 배포가 필요합니다.
+
 ## Implementation Map
 
-- `server.py`: 정적 파일 제공, gzip 압축, `/api/extract` 파일 추출 API
+- `server.py`: 정적 파일 제공, gzip 압축, `/api/extract` 파일 추출 API, `/api/generate` GPT 생성 API
 - `index.html`: 단일 페이지 레이아웃과 템플릿
 - `styles.css`: 업무용 UI 스타일
 - `app.js`: 상태 관리, 자동 임시저장, 문항 탐색, 초안 생성, 평가 점검, 내보내기

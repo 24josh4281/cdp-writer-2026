@@ -15,6 +15,13 @@ python server.py --port 8780
 http://127.0.0.1:8780
 ```
 
+## 외부 공개 링크
+
+- 상시 정적 링크: https://raw.githack.com/24josh4281/CDP-Writer-2026/main/index.html
+- GitHub Pages 예정 링크: https://24josh4281.github.io/CDP-Writer-2026/
+
+정적 링크에서는 질문지 탐색, 작성안내/평가기준 확인, 수동 증빙 붙여넣기, 로컬 브라우저 임시저장 기능을 사용할 수 있습니다. 파일 업로드 추출과 GPT 생성은 API 키 보호가 필요하므로 `python server.py`로 실행한 로컬 서버 또는 별도 보안 서버에서만 동작합니다.
+
 ## 포함 데이터
 
 - 기본 데이터셋: 2026 CDP Full Corporate Questionnaire
@@ -30,8 +37,21 @@ http://127.0.0.1:8780
 - 감점 후보 및 보완 필요 요소 모아보기
 - DOCX, PPTX, XLSX, TXT, CSV, JSON, PDF 텍스트 추출
 - 증빙자료 기반 답변 초안 생성
+- OpenAI GPT 기반 답변 초안 생성
 - 브라우저 로컬 자동 임시저장
 - CSV/JSON 내보내기
+
+## GPT 답변 생성 설정
+
+GPT 답변 생성은 API 키가 브라우저에 노출되지 않도록 `server.py`에서만 호출합니다. 실행 전에 PowerShell에서 아래처럼 환경변수를 설정합니다.
+
+```powershell
+$env:OPENAI_API_KEY = "여기에 OpenAI API 키 입력"
+$env:OPENAI_MODEL = "gpt-5.2"
+python server.py --port 8780
+```
+
+`OPENAI_MODEL`은 필요 시 회사에서 승인한 모델명으로 바꿀 수 있습니다. 실제 API 키는 `.env`, 문서, 코드, GitHub에 저장하지 마십시오.
 
 ## 자동 임시저장
 
@@ -44,6 +64,7 @@ http://127.0.0.1:8780
 - 기본 서버 주소는 `127.0.0.1`로, 같은 PC에서만 접속됩니다.
 - 외부 공유가 필요한 경우에만 임시 터널을 열고, 사용 후 즉시 종료하십시오.
 - `/api/extract` 업로드는 허용 확장자, 파일 수, 파일 크기, 압축 해제 크기, PDF 페이지 수, 추출 텍스트 길이를 제한합니다.
+- `/api/generate`는 서버 환경변수의 `OPENAI_API_KEY`만 사용하며, 브라우저 코드에는 키를 저장하지 않습니다.
 - 로컬 audit 로그와 번역 캐시는 GitHub에 올리지 않도록 `.gitignore`에 포함되어 있습니다.
 
 ## 2026 데이터 재생성

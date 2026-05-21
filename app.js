@@ -83,6 +83,12 @@ function createWorkspaceStorage() {
   }
 }
 
+function apiUrl(path) {
+  const configured = text(window.CDP_API_BASE_URL || "").trim();
+  if (!configured) return path;
+  return new URL(path, configured.endsWith("/") ? configured : `${configured}/`).toString();
+}
+
 function workspaceSnapshot() {
   return {
     version: 1,
@@ -686,6 +692,42 @@ function composeDraft(row, override = {}) {
   return clampText([base, evidencePart, governance, proof].filter(Boolean).join("\n\n"), limit);
 }
 
+function questionPayloadForAi(row) {
+  return {
+    number: questionNumber(row),
+    module: moduleId(row),
+    title_ko: row.question_ko || questionTitle(row),
+    title_en: row.question || row.question_en || "",
+    guidance_ko: row.guidance_ko || row.requestedContent_ko || "",
+    guidance_en: row.guidance_en || row.requestedContent || "",
+    scoring_ko: row.scoring_ko || row.fullScoreChecklist_ko || "",
+    scoring_en: row.scoring_en || row.fullScoreChecklist || row.full_score_checklist || "",
+    points: row.points_ko || row.points || "",
+    evidenceChecklist: row.evidenceChecklist_ko || row.evidenceChecklist || row.evidence_checklist || "",
+  };
+}
+
+async function generateGptDraft(row) {
+  const payload = {
+    company: state.company,
+    sector: state.sector,
+    charLimit: state.charLimit,
+    keywords: state.keywords,
+    evidence: state.evidenceInput || state.evidenceLibrary,
+    question: questionPayloadForAi(row),
+  };
+  const response = await fetch(apiUrl("/api/generate"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json().catch(() => ({ ok: false, error: `HTTP ${response.status}` }));
+  if (!response.ok || !result.ok) {
+    throw new Error(result.error || `HTTP ${response.status}`);
+  }
+  return result.draft || "";
+}
+
 function saveDraft(qn, draft) {
   const row = state.rows.find((item) => questionNumber(item) === qn);
   if (!row) return;
@@ -1178,7 +1220,7 @@ async function extractFiles(files) {
   if (!files.length) return;
   const formData = new FormData();
   for (const file of files) formData.append("files", file);
-  const response = await fetch("/api/extract", { method: "POST", body: formData });
+  const response = await fetch(apiUrl("/api/extract"), { method: "POST", body: formData });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   const payload = await response.json();
   state.fileResults = payload.files || [];
@@ -1244,6 +1286,21 @@ document.addEventListener("click", async (event) => {
     const draft = composeDraft(row);
     saveDraft(questionNumber(row), draft);
     renderWriter();
+    return;
+  }
+  if (target.id === "generateGptButton") {
+    const row = currentRow();
+    target.disabled = true;
+    target.textContent = "GPT 생성 중...";
+    try {
+      const draft = await generateGptDraft(row);
+      saveDraft(questionNumber(row), draft);
+      renderWriter();
+    } catch (error) {
+      alert(`GPT 답변 생성에 실패했습니다.\n\n${error.message}\n\n로컬 서버에서 OPENAI_API_KEY를 설정한 뒤 다시 실행하세요.`);
+      target.disabled = false;
+      target.textContent = "GPT 답변 생성";
+    }
     return;
   }
   if (target.id === "saveDraftButton") {

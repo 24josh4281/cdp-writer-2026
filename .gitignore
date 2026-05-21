@@ -2,6 +2,9 @@ __pycache__/
 *.pyc
 .venv/
 .bkit/
+.env
+.env.*
+!.env.example
 outputs/
 data/translation_cache_nllb_en_ko.json
 data/translation_cache_argos_en_ko.json

@@ -5,8 +5,11 @@ import gzip
 import io
 import json
 import mimetypes
+import os
 import re
 import sys
+import urllib.error
+import urllib.request
 import zipfile
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -23,12 +26,22 @@ MAX_EXTRACTED_CHARS = 500_000
 MAX_ZIP_MEMBERS = 2500
 MAX_ZIP_UNCOMPRESSED_BYTES = 80 * 1024 * 1024
 MAX_PDF_PAGES = 120
+MAX_GENERATE_REQUEST_BYTES = 1 * 1024 * 1024
+MAX_AI_INPUT_CHARS = 24_000
+OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 
 
 def trim_extracted_text(value: str) -> str:
     if len(value) <= MAX_EXTRACTED_CHARS:
         return value
     return f"{value[:MAX_EXTRACTED_CHARS]}\n\n[추출 텍스트가 너무 길어 {MAX_EXTRACTED_CHARS:,}자로 축약되었습니다.]"
+
+
+def clamp_chars(value: Any, limit: int = MAX_AI_INPUT_CHARS) -> str:
+    text_value = "" if value is None else str(value)
+    if len(text_value) <= limit:
+        return text_value
+    return f"{text_value[:limit]}\n\n[입력 내용이 길어 {limit:,}자로 축약되었습니다.]"
 
 
 def checked_zip(data: bytes) -> zipfile.ZipFile:
@@ -206,6 +219,105 @@ def extract_file_text(filename: str, data: bytes) -> dict[str, Any]:
         }
 
 
+def extract_openai_text(payload: dict[str, Any]) -> str:
+    if isinstance(payload.get("output_text"), str):
+        return payload["output_text"].strip()
+    parts: list[str] = []
+    for item in payload.get("output", []) or []:
+        for content in item.get("content", []) or []:
+            if isinstance(content, dict) and isinstance(content.get("text"), str):
+                parts.append(content["text"])
+    return "\n".join(part.strip() for part in parts if part.strip()).strip()
+
+
+def generate_openai_draft(payload: dict[str, Any]) -> dict[str, Any]:
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return {
+            "ok": False,
+            "error": "OPENAI_API_KEY 환경변수가 설정되어 있지 않습니다. 로컬 서버 실행 전에 API 키를 설정하세요.",
+        }
+
+    question = payload.get("question") or {}
+    company = clamp_chars(payload.get("company") or "회사명", 200)
+    sector = clamp_chars(payload.get("sector") or "", 100)
+    keywords = clamp_chars(payload.get("keywords") or "", 2000)
+    evidence = clamp_chars(payload.get("evidence") or "")
+    try:
+        char_limit = int(payload.get("charLimit") or 2400)
+    except (TypeError, ValueError):
+        char_limit = 2400
+    char_limit = max(300, min(char_limit, 8000))
+
+    instructions = (
+        "You are a CDP disclosure drafting assistant for ESG consultants. "
+        "Write in Korean unless the source field explicitly requires English. "
+        "Use only the supplied evidence, keywords, question guidance, and scoring criteria. "
+        "Do not invent numeric values, dates, targets, assurance status, or governance bodies. "
+        "When evidence is missing, write a conservative placeholder in Korean using brackets. "
+        "Prioritize CDP scoring coverage across Disclosure, Awareness, Management, and Leadership criteria. "
+        "Keep the response within the requested character limit."
+    )
+    user_input = {
+        "task": "Create a CDP answer draft that maximizes scoring coverage while remaining evidence-based.",
+        "company": company,
+        "sector": sector,
+        "character_limit": char_limit,
+        "keywords": keywords,
+        "question": {
+            "number": clamp_chars(question.get("number"), 50),
+            "module": clamp_chars(question.get("module"), 50),
+            "title_ko": clamp_chars(question.get("title_ko"), 2000),
+            "title_en": clamp_chars(question.get("title_en"), 2000),
+            "guidance_ko": clamp_chars(question.get("guidance_ko"), 6000),
+            "guidance_en": clamp_chars(question.get("guidance_en"), 6000),
+            "scoring_ko": clamp_chars(question.get("scoring_ko"), 8000),
+            "scoring_en": clamp_chars(question.get("scoring_en"), 8000),
+            "point_allocation": clamp_chars(question.get("points"), 3000),
+            "evidence_checklist": clamp_chars(question.get("evidenceChecklist"), 3000),
+        },
+        "evidence": evidence,
+        "output_requirements": [
+            "한국어 본문으로 작성",
+            "문항에서 요구하는 선택값, 정량값, 설명, 증빙 위치를 빠뜨리지 않기",
+            "증빙이 없는 값은 대괄호 placeholder로 남기기",
+            "문장 마지막에 불필요한 면책 문구 넣지 않기",
+        ],
+    }
+    body = {
+        "model": os.environ.get("OPENAI_MODEL", "gpt-5.2"),
+        "instructions": instructions,
+        "input": json.dumps(user_input, ensure_ascii=False),
+    }
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        OPENAI_RESPONSES_URL,
+        data=data,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:
+            response_payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        return {"ok": False, "error": f"OpenAI API 오류: HTTP {error.code} {detail[:500]}"}
+    except urllib.error.URLError as error:
+        return {"ok": False, "error": f"OpenAI API 연결 오류: {error.reason}"}
+
+    draft = extract_openai_text(response_payload)
+    if not draft:
+        return {"ok": False, "error": "OpenAI 응답에서 초안 텍스트를 찾지 못했습니다."}
+    return {
+        "ok": True,
+        "model": body["model"],
+        "draft": clamp_chars(draft, char_limit),
+    }
+
+
 def parse_multipart(content_type: str, body: bytes) -> list[dict[str, Any]]:
     match = re.search(r"boundary=(.+)", content_type)
     if not match:
@@ -278,7 +390,7 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self) -> None:
-        if self.path != "/api/extract":
+        if self.path not in {"/api/extract", "/api/generate"}:
             self.send_json(404, {"ok": False, "error": "Unknown endpoint"})
             return
 
@@ -290,10 +402,24 @@ class Handler(SimpleHTTPRequestHandler):
         if length <= 0:
             self.send_json(400, {"ok": False, "error": "No upload body"})
             return
+        if self.path == "/api/generate" and length > MAX_GENERATE_REQUEST_BYTES:
+            self.send_json(413, {"ok": False, "error": f"Generate request too large. Limit is {MAX_GENERATE_REQUEST_BYTES // (1024 * 1024)}MB."})
+            return
         if length > MAX_REQUEST_BYTES:
             self.send_json(413, {"ok": False, "error": f"Upload too large. Limit is {MAX_REQUEST_BYTES // (1024 * 1024)}MB."})
             return
         body = self.rfile.read(length)
+
+        if self.path == "/api/generate":
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                self.send_json(400, {"ok": False, "error": "Invalid JSON body"})
+                return
+            result = generate_openai_draft(payload)
+            self.send_json(200 if result.get("ok") else 502, result)
+            return
+
         files = parse_multipart(self.headers.get("Content-Type", ""), body)
         if len(files) > MAX_FILES:
             self.send_json(413, {"ok": False, "error": f"Too many files. Limit is {MAX_FILES} files."})
