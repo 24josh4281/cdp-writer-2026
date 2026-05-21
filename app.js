@@ -1,4 +1,6 @@
 const DATASET_URL = "./data/cdp_2026_full_dataset.json";
+const STORAGE_KEY = "cdp-writer-2026-workspace";
+const workspaceStorage = createWorkspaceStorage();
 
 const app = document.querySelector("#app");
 const datasetSelect = document.querySelector("#datasetSelect");
@@ -63,6 +65,94 @@ function normalize(value) {
 
 function charCount(value) {
   return [...text(value)].length;
+}
+
+function createWorkspaceStorage() {
+  try {
+    const storage = window.sessionStorage;
+    const testKey = `${STORAGE_KEY}:test`;
+    storage.setItem(testKey, "1");
+    storage.removeItem(testKey);
+    return storage;
+  } catch {
+    return {
+      getItem: () => null,
+      setItem: () => {},
+      removeItem: () => {},
+    };
+  }
+}
+
+function workspaceSnapshot() {
+  return {
+    version: 1,
+    savedAt: new Date().toISOString(),
+    datasetUrl: datasetSelect?.value || DATASET_URL,
+    activeView: state.activeView,
+    selectedModule: state.selectedModule,
+    selectedIssue: state.selectedIssue,
+    selectedQuestion: state.selectedQuestion,
+    search: state.search,
+    company: state.company,
+    sector: state.sector,
+    charLimit: state.charLimit,
+    keywords: state.keywords,
+    evidenceInput: state.evidenceInput,
+    evidenceLibrary: state.evidenceLibrary,
+    drafts: state.drafts,
+    evaluationScope: state.evaluationScope,
+    language: state.language,
+    guideTab: state.guideTab,
+    referenceKey: state.referenceKey,
+  };
+}
+
+function persistWorkspace() {
+  try {
+    workspaceStorage.setItem(STORAGE_KEY, JSON.stringify(workspaceSnapshot()));
+  } catch {
+    // Local autosave is best-effort. Export remains the reliable backup.
+  }
+}
+
+function restoreWorkspace(datasetUrl) {
+  try {
+    const saved = JSON.parse(workspaceStorage.getItem(STORAGE_KEY) || "null");
+    if (!saved || saved.datasetUrl !== datasetUrl) return;
+    Object.assign(state, {
+      activeView: saved.activeView || state.activeView,
+      selectedModule: saved.selectedModule || "all",
+      selectedIssue: saved.selectedIssue || "all",
+      selectedQuestion: saved.selectedQuestion || state.selectedQuestion,
+      search: saved.search || "",
+      company: saved.company || state.company,
+      sector: saved.sector || state.sector,
+      charLimit: Number(saved.charLimit || state.charLimit || 2400),
+      keywords: saved.keywords || "",
+      evidenceInput: saved.evidenceInput || "",
+      evidenceLibrary: saved.evidenceLibrary || "",
+      drafts: saved.drafts || {},
+      evaluationScope: saved.evaluationScope || state.evaluationScope,
+      language: saved.language || state.language,
+      guideTab: saved.guideTab || state.guideTab,
+      referenceKey: saved.referenceKey || state.referenceKey,
+    });
+  } catch {
+    workspaceStorage.removeItem(STORAGE_KEY);
+  }
+}
+
+function clearWorkspaceStorage() {
+  workspaceStorage.removeItem(STORAGE_KEY);
+  state.drafts = {};
+  state.evidenceInput = "";
+  state.evidenceLibrary = "";
+  state.fileResults = [];
+  state.keywords = "";
+  state.search = "";
+  state.selectedModule = "all";
+  state.selectedIssue = "all";
+  state.selectedQuestion = state.rows[0] ? questionNumber(state.rows[0]) : "";
 }
 
 function clampText(value, limit) {
@@ -611,6 +701,7 @@ function saveDraft(qn, draft) {
     updatedAt: new Date().toISOString(),
     statuses: rows.map((item) => item.statusCode),
   };
+  persistWorkspace();
 }
 
 function questionOverallStatus(row) {
@@ -1045,6 +1136,7 @@ function switchView(view) {
   state.activeView = view;
   history.replaceState(null, "", `#${view}`);
   render();
+  persistWorkspace();
 }
 
 function download(filename, content, type) {
@@ -1095,6 +1187,7 @@ async function extractFiles(files) {
     state.evidenceLibrary = [state.evidenceLibrary, ...extracted].filter(Boolean).join("\n\n");
     if (!state.evidenceInput) state.evidenceInput = state.evidenceLibrary;
   }
+  persistWorkspace();
 }
 
 function currentDraftText() {
@@ -1117,16 +1210,19 @@ document.addEventListener("click", async (event) => {
     state.language = target.dataset.language;
     document.querySelectorAll("[data-language]").forEach((button) => button.classList.toggle("is-active", button.dataset.language === state.language));
     render();
+    persistWorkspace();
     return;
   }
   if (target.dataset.guideTab) {
     state.guideTab = target.dataset.guideTab;
     renderWriter();
+    persistWorkspace();
     return;
   }
   if (target.dataset.referenceKey) {
     state.referenceKey = target.dataset.referenceKey;
     renderReferences();
+    persistWorkspace();
     return;
   }
   if (target.dataset.moduleOpen) {
@@ -1134,11 +1230,13 @@ document.addEventListener("click", async (event) => {
     state.activeView = "writer";
     state.selectedQuestion = filteredQuestions()[0] ? questionNumber(filteredQuestions()[0]) : state.selectedQuestion;
     render();
+    persistWorkspace();
     return;
   }
   if (target.dataset.question) {
     state.selectedQuestion = target.dataset.question;
     renderWriter();
+    persistWorkspace();
     return;
   }
   if (target.id === "generateButton") {
@@ -1189,6 +1287,14 @@ document.addEventListener("click", async (event) => {
     state.evidenceInput = "";
     state.fileResults = [];
     renderEvidence();
+    persistWorkspace();
+    return;
+  }
+  if (target.id === "clearWorkspaceButton") {
+    if (confirm("브라우저에 임시저장된 초안과 증빙 입력을 모두 삭제할까요? 내보낸 CSV/JSON 파일은 영향을 받지 않습니다.")) {
+      clearWorkspaceStorage();
+      render();
+    }
     return;
   }
   if (target.dataset.export === "csv") exportCsv();
@@ -1208,11 +1314,13 @@ document.addEventListener("input", (event) => {
   if (target.id === "draftText") {
     const counter = document.querySelector('[data-field="charCounter"]');
     if (counter) counter.textContent = `${charCount(target.value)}자 / ${state.charLimit}자`;
+    saveDraft(state.selectedQuestion, target.value);
   }
   if (target.id === "evidenceLibraryText") {
     state.evidenceLibrary = target.value;
     if (!state.evidenceInput) state.evidenceInput = target.value;
   }
+  persistWorkspace();
 });
 
 document.addEventListener("change", (event) => {
@@ -1222,14 +1330,19 @@ document.addEventListener("change", (event) => {
     const rows = filteredQuestions();
     state.selectedQuestion = rows[0] ? questionNumber(rows[0]) : state.selectedQuestion;
     renderWriter();
+    persistWorkspace();
   }
   if (target.id === "issueFilter") {
     state.selectedIssue = target.value;
     const rows = filteredQuestions();
     state.selectedQuestion = rows[0] ? questionNumber(rows[0]) : state.selectedQuestion;
     renderWriter();
+    persistWorkspace();
   }
-  if (target.id === "sectorSelect") state.sector = target.value;
+  if (target.id === "sectorSelect") {
+    state.sector = target.value;
+    persistWorkspace();
+  }
 });
 
 exportJsonButton.addEventListener("click", exportJson);
@@ -1246,6 +1359,10 @@ async function loadDataset(url) {
   state.selectedIssue = "all";
   state.referenceKey = dataset.references?.[0]?.key || "";
   state.activeView = location.hash.replace("#", "") || "dashboard";
+  restoreWorkspace(url);
+  if (!state.rows.some((row) => questionNumber(row) === state.selectedQuestion)) {
+    state.selectedQuestion = state.rows[0] ? questionNumber(state.rows[0]) : "";
+  }
   if (!["dashboard", "writer", "evaluation", "references", "evidence", "export"].includes(state.activeView)) {
     state.activeView = "dashboard";
   }

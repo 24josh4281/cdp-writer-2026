@@ -15,6 +15,33 @@ from xml.etree import ElementTree as ET
 
 
 ROOT = Path(__file__).resolve().parent
+ALLOWED_UPLOAD_SUFFIXES = {".docx", ".pptx", ".xlsx", ".pdf", ".txt", ".csv", ".json", ".md"}
+MAX_REQUEST_BYTES = 30 * 1024 * 1024
+MAX_FILE_BYTES = 25 * 1024 * 1024
+MAX_FILES = 10
+MAX_EXTRACTED_CHARS = 500_000
+MAX_ZIP_MEMBERS = 2500
+MAX_ZIP_UNCOMPRESSED_BYTES = 80 * 1024 * 1024
+MAX_PDF_PAGES = 120
+
+
+def trim_extracted_text(value: str) -> str:
+    if len(value) <= MAX_EXTRACTED_CHARS:
+        return value
+    return f"{value[:MAX_EXTRACTED_CHARS]}\n\n[추출 텍스트가 너무 길어 {MAX_EXTRACTED_CHARS:,}자로 축약되었습니다.]"
+
+
+def checked_zip(data: bytes) -> zipfile.ZipFile:
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    infos = zf.infolist()
+    if len(infos) > MAX_ZIP_MEMBERS:
+        zf.close()
+        raise ValueError("압축 파일 내부 항목이 너무 많습니다.")
+    total_size = sum(info.file_size for info in infos)
+    if total_size > MAX_ZIP_UNCOMPRESSED_BYTES:
+        zf.close()
+        raise ValueError("압축 해제 후 파일 크기가 너무 큽니다.")
+    return zf
 
 
 def decode_text(data: bytes) -> str:
@@ -40,7 +67,7 @@ def xml_text(data: bytes) -> str:
 
 
 def extract_docx(data: bytes) -> str:
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+    with checked_zip(data) as zf:
         names = [
             name
             for name in zf.namelist()
@@ -52,7 +79,7 @@ def extract_docx(data: bytes) -> str:
 
 
 def extract_pptx(data: bytes) -> str:
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+    with checked_zip(data) as zf:
         names = [
             name
             for name in zf.namelist()
@@ -81,7 +108,7 @@ def extract_xlsx_with_openpyxl(data: bytes) -> str:
 
 
 def extract_xlsx_fallback(data: bytes) -> str:
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+    with checked_zip(data) as zf:
         shared: list[str] = []
         if "xl/sharedStrings.xml" in zf.namelist():
             root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
@@ -111,6 +138,8 @@ def extract_xlsx_fallback(data: bytes) -> str:
 
 
 def extract_xlsx(data: bytes) -> str:
+    with checked_zip(data):
+        pass
     try:
         return extract_xlsx_with_openpyxl(data)
     except Exception:
@@ -124,12 +153,30 @@ def extract_pdf(data: bytes) -> str:
         return "PDF text extraction requires pypdf. Please paste the relevant evidence text manually."
 
     reader = PdfReader(io.BytesIO(data))
+    if len(reader.pages) > MAX_PDF_PAGES:
+        raise ValueError(f"PDF 페이지 수가 너무 많습니다. 최대 {MAX_PDF_PAGES}쪽까지 추출합니다.")
     return "\n".join((page.extract_text() or "").strip() for page in reader.pages).strip()
 
 
 def extract_file_text(filename: str, data: bytes) -> dict[str, Any]:
     suffix = Path(filename).suffix.lower()
     try:
+        if suffix not in ALLOWED_UPLOAD_SUFFIXES:
+            return {
+                "filename": filename,
+                "ok": False,
+                "characters": 0,
+                "text": "",
+                "error": "허용되지 않는 파일 형식입니다.",
+            }
+        if len(data) > MAX_FILE_BYTES:
+            return {
+                "filename": filename,
+                "ok": False,
+                "characters": 0,
+                "text": "",
+                "error": f"파일이 너무 큽니다. 최대 {MAX_FILE_BYTES // (1024 * 1024)}MB까지 허용됩니다.",
+            }
         if suffix == ".docx":
             text = extract_docx(data)
         elif suffix == ".pptx":
@@ -146,7 +193,8 @@ def extract_file_text(filename: str, data: bytes) -> dict[str, Any]:
             "filename": filename,
             "ok": True,
             "characters": len(text),
-            "text": text,
+            "text": trim_extracted_text(text),
+            "truncated": len(text) > MAX_EXTRACTED_CHARS,
         }
     except Exception as error:
         return {
@@ -178,6 +226,8 @@ def parse_multipart(content_type: str, body: bytes) -> list[dict[str, Any]]:
         if content.endswith(b"--"):
             content = content[:-2]
         files.append({"filename": filename, "data": content.rstrip(b"\r\n")})
+        if len(files) > MAX_FILES:
+            break
     return files
 
 
@@ -232,9 +282,22 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json(404, {"ok": False, "error": "Unknown endpoint"})
             return
 
-        length = int(self.headers.get("Content-Length", "0"))
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self.send_json(400, {"ok": False, "error": "Invalid Content-Length"})
+            return
+        if length <= 0:
+            self.send_json(400, {"ok": False, "error": "No upload body"})
+            return
+        if length > MAX_REQUEST_BYTES:
+            self.send_json(413, {"ok": False, "error": f"Upload too large. Limit is {MAX_REQUEST_BYTES // (1024 * 1024)}MB."})
+            return
         body = self.rfile.read(length)
         files = parse_multipart(self.headers.get("Content-Type", ""), body)
+        if len(files) > MAX_FILES:
+            self.send_json(413, {"ok": False, "error": f"Too many files. Limit is {MAX_FILES} files."})
+            return
         results = [extract_file_text(item["filename"], item["data"]) for item in files]
         self.send_json(200, {"ok": True, "files": results})
 
