@@ -27,6 +27,7 @@ MAX_ZIP_MEMBERS = 2500
 MAX_ZIP_UNCOMPRESSED_BYTES = 80 * 1024 * 1024
 MAX_PDF_PAGES = 120
 MAX_GENERATE_REQUEST_BYTES = 1 * 1024 * 1024
+MAX_EXPORT_REQUEST_BYTES = 20 * 1024 * 1024
 MAX_AI_INPUT_CHARS = 24_000
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 
@@ -318,6 +319,120 @@ def generate_openai_draft(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def xml_escape(value: Any) -> str:
+    return (
+        "" if value is None else str(value)
+    ).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+def column_name(index: int) -> str:
+    name = ""
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        name = chr(65 + remainder) + name
+    return name
+
+
+def safe_sheet_name(value: Any, fallback: str) -> str:
+    name = re.sub(r"[\[\]\:\*\?\/\\]", " ", str(value or fallback)).strip()[:31]
+    return name or fallback
+
+
+def worksheet_xml(rows: list[list[Any]]) -> str:
+    xml_rows: list[str] = []
+    for r_idx, row in enumerate(rows[:20000], start=1):
+        cells: list[str] = []
+        for c_idx, value in enumerate(row[:80], start=1):
+            cell_ref = f"{column_name(c_idx)}{r_idx}"
+            cell_value = xml_escape(value)
+            cells.append(f'<c r="{cell_ref}" t="inlineStr"><is><t xml:space="preserve">{cell_value}</t></is></c>')
+        xml_rows.append(f'<row r="{r_idx}">{"".join(cells)}</row>')
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<sheetData>'
+        f'{"".join(xml_rows)}'
+        '</sheetData></worksheet>'
+    )
+
+
+def workbook_xml(sheet_names: list[str]) -> str:
+    sheets = "".join(
+        f'<sheet name="{xml_escape(name)}" sheetId="{index}" r:id="rId{index}"/>'
+        for index, name in enumerate(sheet_names, start=1)
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        f'<sheets>{sheets}</sheets></workbook>'
+    )
+
+
+def workbook_rels_xml(sheet_count: int) -> str:
+    rels = "".join(
+        f'<Relationship Id="rId{index}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{index}.xml"/>'
+        for index in range(1, sheet_count + 1)
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        f'{rels}</Relationships>'
+    )
+
+
+def content_types_xml(sheet_count: int) -> str:
+    overrides = "".join(
+        f'<Override PartName="/xl/worksheets/sheet{index}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        for index in range(1, sheet_count + 1)
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        f'{overrides}</Types>'
+    )
+
+
+def create_xlsx(payload: dict[str, Any]) -> bytes:
+    sheets = payload.get("sheets")
+    if not isinstance(sheets, list) or not sheets:
+        raise ValueError("No sheets supplied")
+    normalized: list[tuple[str, list[list[Any]]]] = []
+    used_names: set[str] = set()
+    for index, sheet in enumerate(sheets[:12], start=1):
+        if not isinstance(sheet, dict):
+            continue
+        name = safe_sheet_name(sheet.get("name"), f"Sheet{index}")
+        base_name = name
+        suffix = 2
+        while name in used_names:
+            name = safe_sheet_name(f"{base_name}_{suffix}", f"Sheet{index}")
+            suffix += 1
+        used_names.add(name)
+        rows = sheet.get("rows") if isinstance(sheet.get("rows"), list) else []
+        normalized.append((name, rows))
+    if not normalized:
+        raise ValueError("No valid sheets supplied")
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", content_types_xml(len(normalized)))
+        zf.writestr("_rels/.rels", (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+            '</Relationships>'
+        ))
+        zf.writestr("xl/workbook.xml", workbook_xml([name for name, _ in normalized]))
+        zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels_xml(len(normalized)))
+        for index, (_, rows) in enumerate(normalized, start=1):
+            zf.writestr(f"xl/worksheets/sheet{index}.xml", worksheet_xml(rows))
+    return buffer.getvalue()
+
+
 def parse_multipart(content_type: str, body: bytes) -> list[dict[str, Any]]:
     match = re.search(r"boundary=(.+)", content_type)
     if not match:
@@ -366,6 +481,14 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def send_binary(self, status: int, data: bytes, content_type: str, filename: str) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def send_compressed_file(self) -> bool:
         if "gzip" not in self.headers.get("Accept-Encoding", "").lower():
             return False
@@ -390,7 +513,7 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self) -> None:
-        if self.path not in {"/api/extract", "/api/generate"}:
+        if self.path not in {"/api/extract", "/api/generate", "/api/export-xlsx"}:
             self.send_json(404, {"ok": False, "error": "Unknown endpoint"})
             return
 
@@ -405,6 +528,9 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path == "/api/generate" and length > MAX_GENERATE_REQUEST_BYTES:
             self.send_json(413, {"ok": False, "error": f"Generate request too large. Limit is {MAX_GENERATE_REQUEST_BYTES // (1024 * 1024)}MB."})
             return
+        if self.path == "/api/export-xlsx" and length > MAX_EXPORT_REQUEST_BYTES:
+            self.send_json(413, {"ok": False, "error": f"Export request too large. Limit is {MAX_EXPORT_REQUEST_BYTES // (1024 * 1024)}MB."})
+            return
         if length > MAX_REQUEST_BYTES:
             self.send_json(413, {"ok": False, "error": f"Upload too large. Limit is {MAX_REQUEST_BYTES // (1024 * 1024)}MB."})
             return
@@ -412,12 +538,25 @@ class Handler(SimpleHTTPRequestHandler):
 
         if self.path == "/api/generate":
             try:
-                payload = json.loads(body.decode("utf-8"))
+                payload = json.loads(body.decode("utf-8-sig"))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 self.send_json(400, {"ok": False, "error": "Invalid JSON body"})
                 return
             result = generate_openai_draft(payload)
             self.send_json(200 if result.get("ok") else 502, result)
+            return
+
+        if self.path == "/api/export-xlsx":
+            try:
+                payload = json.loads(body.decode("utf-8-sig"))
+                data = create_xlsx(payload)
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+                self.send_json(400, {"ok": False, "error": str(error)})
+                return
+            filename = re.sub(r'[^A-Za-z0-9._-]+', "_", str(payload.get("filename") or "cdp-preassessment.xlsx"))
+            if not filename.endswith(".xlsx"):
+                filename += ".xlsx"
+            self.send_binary(200, data, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename)
             return
 
         files = parse_multipart(self.headers.get("Content-Type", ""), body)

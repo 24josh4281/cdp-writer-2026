@@ -435,6 +435,44 @@ textarea {
   font-size: 15px;
 }
 
+.score-summary {
+  border: 1px solid var(--line);
+  background: #fff;
+  padding: 12px;
+  margin-bottom: 14px;
+}
+
+.score-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 10px;
+}
+
+.score-line span {
+  border: 1px solid var(--line);
+  background: var(--soft);
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.condition-table {
+  margin: 10px 0;
+  font-size: 12px;
+}
+
+.condition-table th:nth-child(2),
+.condition-table td:nth-child(2) {
+  width: 112px;
+}
+
+.condition-terms {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .scoring-issue-card {
   border: 1px solid var(--line);
   background: #fff;

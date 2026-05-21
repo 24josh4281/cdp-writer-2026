@@ -46,6 +46,23 @@ const SIGNALS = [
   { label: "정량 산정", terms: ["산정", "계산", "계수", "methodology", "factor", "market-based", "location-based"] },
 ];
 
+const ESSENTIAL_CHECKS = [
+  { id: "transition_plan", label: "기후전환계획", terms: ["전환계획", "전환 계획", "transition plan", "1.5", "net zero"], levels: ["A", "A-"] },
+  { id: "scope_1_2", label: "Scope 1/2 배출량", terms: ["scope 1", "scope 2", "직접배출", "간접배출", "location-based", "market-based"], levels: ["A", "A-"] },
+  { id: "scope_3", label: "Scope 3 및 가치사슬", terms: ["scope 3", "가치사슬", "공급망", "value chain", "supplier"], levels: ["A", "A-"] },
+  { id: "targets", label: "목표 및 진행률", terms: ["목표", "기준연도", "목표연도", "target", "progress", "sbti"], levels: ["A", "A-"] },
+  { id: "assurance", label: "검증/보증", terms: ["검증", "보증", "verification", "assurance", "iso 14064"], levels: ["A", "A-"] },
+  { id: "governance", label: "거버넌스 책임", terms: ["이사회", "경영진", "위원회", "board", "management", "책임"], levels: ["A", "A-"] },
+];
+
+const SECTOR_RULES = {
+  CH: { label: "화학", tags: ["Chemicals", "CH"], terms: ["chemical", "chemicals", "화학", "bio-based", "hazardous", "water", "plastics"] },
+  FS: { label: "금융서비스", tags: ["Financial services", "FS"], terms: ["financial services", "portfolio", "client", "investee", "financed emissions"] },
+  MM: { label: "금속 및 광업", tags: ["Metals & Mining", "Metals &mining", "MM"], terms: ["metals", "mining", "tailings", "광업", "금속"] },
+  COAL: { label: "석탄", tags: ["Coal", "COAL"], terms: ["coal", "석탄"] },
+  GEN: { label: "일반", tags: ["General"], terms: [] },
+};
+
 function text(value) {
   return value === null || value === undefined ? "" : String(value);
 }
@@ -607,22 +624,235 @@ function requiredSignals(criteria) {
   return found.length ? found : [{ label: "평가기준 원문 대응", terms: [] }];
 }
 
-function scoreDraft(row, draft, evidence, keywords) {
-  const combined = normalize([draft, evidence, keywords].join(" "));
+function cleanCriterionText(value) {
+  return text(value)
+    .replace(/\s+/g, " ")
+    .replace(/\bAND\b/g, " AND ")
+    .replace(/\bOR\b/g, " OR ")
+    .trim();
+}
+
+function routeLabel(value) {
+  const lower = normalize(value);
+  if (lower.includes("not applicable")) return "Not applicable";
+  const route = text(value).match(/route\s*([a-z])/i);
+  return route ? `Route ${route[1].toUpperCase()}` : "";
+}
+
+function termsFromText(value) {
+  const lower = normalize(value);
+  const terms = new Set();
+  for (const signal of SIGNALS) {
+    if (signal.terms.some((term) => lower.includes(term.toLowerCase()))) {
+      signal.terms.slice(0, 4).forEach((term) => terms.add(term));
+    }
+  }
+  const quoted = [...text(value).matchAll(/['"‘’“”]([^'"‘’“”]{2,80})['"‘’“”]/g)].map((match) => match[1]);
+  quoted.slice(0, 8).forEach((term) => terms.add(term));
+  const keywords = [
+    "short-term",
+    "medium-term",
+    "long-term",
+    "단기",
+    "중기",
+    "장기",
+    "yes",
+    "no",
+    "annually",
+    "more than once a year",
+    "climate change",
+    "water",
+    "risks",
+    "opportunities",
+    "scope 1",
+    "scope 2",
+    "scope 3",
+  ];
+  keywords.filter((term) => lower.includes(term.toLowerCase())).forEach((term) => terms.add(term));
+  return [...terms].slice(0, 12);
+}
+
+function atomizeCriteria(criteria) {
+  const source = text(criteria)
+    .replace(/\r/g, "\n")
+    .replace(/(ROUTE\s+[A-Z]\))/gi, "\n$1 ")
+    .replace(/(NOT APPLICABLE ROUTE\))/gi, "\n$1 ")
+    .replace(/([.;])\s*(AND|OR)\s+/gi, "$1\n$2 ")
+    .replace(/\s+(i{1,3}|iv|v|vi{0,3}|x)\)\s+/gi, "\n$1) ")
+    .replace(/\s+([a-z])\)\s+/gi, "\n$1) ");
+  const routeLines = source.split(/\n+/).map(cleanCriterionText).filter(Boolean);
+  const atoms = [];
+  let activeRoute = "";
+  for (const line of routeLines) {
+    const route = routeLabel(line);
+    if (route) activeRoute = route;
+    const pieces = line
+      .split(/\s+-\s+|;\s+|(?<=\.)\s+(?=(Columns|Both|Any|All|Either|If|For rows|Points|A maximum|Maximum|선택|입력|작성|해당|다음|모든|둘 중|하나))/)
+      .map(cleanCriterionText)
+      .filter((piece) => piece.length >= 18);
+    for (const piece of pieces) {
+      if (/^a maximum|^maximum|^points will be awarded/i.test(piece) && piece.length < 120) continue;
+      atoms.push({
+        id: atoms.length + 1,
+        label: `조건 ${atoms.length + 1}`,
+        detail: clampText(piece, 520),
+        route: routeLabel(piece) || activeRoute,
+        terms: termsFromText(piece),
+      });
+    }
+  }
+  if (atoms.length) return atoms.slice(0, 24);
+  return requiredSignals(criteria).map((signal, index) => ({
+    id: index + 1,
+    label: `조건 ${index + 1}`,
+    detail: signal.label,
+    route: "",
+    terms: signal.terms,
+  }));
+}
+
+function sourceFragments(source) {
+  return text(source)
+    .split(/\n{2,}|(?<=다\.)\s+|(?<=요\.)\s+|(?<=\.)\s+|(?<=\))\s+/)
+    .map((item) => item.replace(/\s+/g, " ").trim())
+    .filter((item) => item.length >= 12);
+}
+
+function evidenceSnippet(source, terms, fallback = "") {
+  const fragments = sourceFragments(source);
+  if (!fragments.length) return "";
+  const normalizedTerms = (terms || []).map((term) => term.toLowerCase()).filter(Boolean);
+  const matched = normalizedTerms.length
+    ? fragments.find((fragment) => normalizedTerms.some((term) => normalize(fragment).includes(term)))
+    : fragments[0];
+  return clampText(matched || fallback || "", 260);
+}
+
+function signalDetail(signal, source) {
+  const normalizedSource = normalize(source);
+  if (!signal.terms.length) {
+    const hasEnoughContext = normalizedSource.length >= 120;
+    return {
+      label: signal.label,
+      detail: signal.detail || signal.label,
+      route: signal.route || "",
+      terms: [],
+      statusCode: hasEnoughContext ? "pass" : "fail",
+      status: hasEnoughContext ? "충족 가능" : "보완 필요",
+      evidence: hasEnoughContext ? evidenceSnippet(source, [], source) : "응답 또는 증빙 문장이 충분하지 않습니다.",
+      engine: "rule",
+    };
+  }
+  const matchedTerms = signal.terms.filter((term) => normalizedSource.includes(term.toLowerCase()));
+  const statusCode = matchedTerms.length ? "pass" : "fail";
+  return {
+    label: signal.label,
+    detail: signal.detail || signal.label,
+    route: signal.route || "",
+    terms: signal.terms,
+    matchedTerms,
+    statusCode,
+    status: statusCode === "pass" ? "충족 가능" : "보완 필요",
+    evidence: statusCode === "pass" ? evidenceSnippet(source, matchedTerms) : `필요 키워드/근거: ${signal.terms.slice(0, 4).join(", ")}`,
+    engine: "rule",
+  };
+}
+
+function sectionMaxPoints(row, section) {
+  const denominator = Number(row.denominators?.[section.level]);
+  if (Number.isFinite(denominator) && denominator > 0) return denominator;
+  const ratioMatch = text(section.points).match(/(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/);
+  if (ratioMatch) return Number(ratioMatch[2]);
+  const pointMatch = text(section.points).match(/(\d+(?:\.\d+)?)/);
+  return pointMatch ? Number(pointMatch[1]) : 0;
+}
+
+function formatPointValue(value) {
+  if (!Number.isFinite(value)) return "-";
+  return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function confidenceFrom(ratio, conditionRows, draft, evidence) {
+  const sourceLength = charCount([draft, evidence].join(" "));
+  const hasEvidence = text(evidence).trim().length >= 80;
+  if (!sourceLength) return { code: "fail", label: "낮음", note: "응답 또는 증빙이 없습니다." };
+  if (ratio >= 0.99 && hasEvidence && conditionRows.every((item) => item.statusCode === "pass")) {
+    return { code: "pass", label: "높음", note: "조건 키워드와 증빙 문장이 함께 확인됩니다." };
+  }
+  if (ratio >= 0.5 || sourceLength >= 300) {
+    return { code: "partial", label: "중간", note: "일부 조건은 확인되지만 원문 대조가 필요합니다." };
+  }
+  return { code: "fail", label: "낮음", note: "평가기준을 충족하는 근거가 부족합니다." };
+}
+
+function confidenceLabel(method, confidence) {
+  const methodLabel = method === "gpt" ? "GPT 보조" : method === "manual" ? "수동 입력" : "규칙 기반";
+  if (confidence.code === "pass") return `확실 · ${methodLabel}`;
+  if (confidence.code === "partial") return `검토 필요 · ${methodLabel}`;
+  return `판단 불가 · ${methodLabel}`;
+}
+
+function sectionRouteInfo(section, conditionRows) {
+  const source = normalize([section.name, section.criteria, conditionRows.map((item) => item.route).join(" ")].join(" "));
+  const routes = [...new Set(conditionRows.map((item) => item.route).filter(Boolean))];
+  return {
+    routes,
+    hasRoute: routes.length > 0 || /route\s+[a-z]/i.test(source),
+    notApplicable: source.includes("not applicable"),
+    bestRow: source.includes("best row"),
+    rowLevel: source.includes("row") || source.includes("rows") || source.includes("행"),
+    partial: source.includes("proportion") || source.includes("partial") || source.includes("부분"),
+  };
+}
+
+function scoreCalculation(row, section, ratio, conditionRows) {
+  const denominator = sectionMaxPoints(row, section);
+  const route = sectionRouteInfo(section, conditionRows);
+  const numerator = denominator ? Math.round(denominator * ratio * 100) / 100 : 0;
+  const notes = [];
+  if (route.hasRoute) notes.push(`route 적용: ${route.routes.join(", ") || "원문 확인"}`);
+  if (route.notApplicable) notes.push("Not applicable 경로 포함");
+  if (route.bestRow) notes.push("best row scoring 문구 포함");
+  if (route.rowLevel) notes.push("row-level/cell-level 조건 포함");
+  if (route.partial) notes.push("부분점수/비례점수 문구 포함");
+  return {
+    numerator,
+    denominator,
+    ratio,
+    route,
+    method: denominator ? "조건 충족률 기반 추정" : "배점 원문 확인 필요",
+    notes,
+  };
+}
+
+function scoreDraft(row, draft, evidence, keywords, method = "rule") {
+  const combinedSource = [draft, evidence, keywords].join("\n\n");
+  const combined = normalize(combinedSource);
   const checklist = state.language === "en" ? row.fullScoreChecklist || row.full_score_checklist : row.fullScoreChecklist_ko || row.scoring_ko || row.fullScoreChecklist || row.full_score_checklist;
   return criteriaSections(checklist).map((section) => {
-    const signals = requiredSignals(section.criteria);
+    const signals = atomizeCriteria(section.criteria);
+    const conditionRows = signals.map((signal) => signalDetail(signal, combinedSource));
     const matched = signals.filter((signal) => {
       if (!signal.terms.length) return combined.length >= 120;
       return signal.terms.some((term) => combined.includes(term.toLowerCase()));
     });
     const ratio = signals.length ? matched.length / signals.length : 1;
     const statusCode = ratio >= 0.99 ? "pass" : ratio >= 0.5 ? "partial" : "fail";
+    const maxPoints = sectionMaxPoints(row, section);
+    const calculation = scoreCalculation(row, section, ratio, conditionRows);
+    const earnedPoints = calculation.numerator;
+    const confidence = confidenceFrom(ratio, conditionRows, draft, evidence);
+    confidence.label = confidenceLabel(method, confidence);
     return {
       ...section,
       signals,
       matched,
+      conditionRows,
       ratio,
+      maxPoints,
+      earnedPoints,
+      calculation,
+      confidence,
       statusCode,
       status: statusCode === "pass" ? "충족 가능" : statusCode === "partial" ? "부분 보완 필요" : "보완 필요",
     };
@@ -728,13 +958,15 @@ async function generateGptDraft(row) {
   return result.draft || "";
 }
 
-function saveDraft(qn, draft) {
+function saveDraft(qn, draft, options = {}) {
   const row = state.rows.find((item) => questionNumber(item) === qn);
   if (!row) return;
   const evidence = state.evidenceInput || state.evidenceLibrary;
-  const rows = scoreDraft(row, draft, evidence, state.keywords);
+  const method = options.method || state.drafts[qn]?.method || "manual";
+  const rows = scoreDraft(row, draft, evidence, state.keywords, method);
   state.drafts[qn] = {
     draft,
+    method,
     company: state.company,
     sector: state.sector,
     keywords: state.keywords,
@@ -749,7 +981,7 @@ function saveDraft(qn, draft) {
 function questionOverallStatus(row) {
   const record = draftRecord(questionNumber(row));
   if (!record?.draft) return { code: "fail", label: "미작성" };
-  const scores = scoreDraft(row, record.draft, record.evidence, record.keywords);
+  const scores = scoreDraft(row, record.draft, record.evidence, record.keywords, record.method);
   if (scores.every((item) => item.statusCode === "pass")) return { code: "pass", label: "충족 가능" };
   if (scores.some((item) => item.statusCode === "pass" || item.statusCode === "partial")) return { code: "partial", label: "보완 필요" };
   return { code: "fail", label: "보완 필요" };
@@ -757,16 +989,103 @@ function questionOverallStatus(row) {
 
 function deductionRows(scope = state.evaluationScope) {
   return state.rows.flatMap((row) => {
+    if (isSectorSpecificRow(row) && !isSelectedSectorRow(row)) return [];
     const qn = questionNumber(row);
     const record = draftRecord(qn);
     if (scope === "drafted" && !record?.draft) return [];
     const draft = record?.draft || "";
     const evidence = record?.evidence || state.evidenceLibrary;
     const keywords = record?.keywords || state.keywords;
-    return scoreDraft(row, draft, evidence, keywords)
+    return scoreDraft(row, draft, evidence, keywords, record?.method || "rule")
       .filter((item) => item.statusCode !== "pass")
       .map((item) => ({ row, qn, record, item }));
   });
+}
+
+function combinedEvaluationText() {
+  const draftText = Object.values(state.drafts)
+    .map((record) => record?.draft || "")
+    .filter(Boolean)
+    .join("\n\n");
+  return [draftText, state.evidenceLibrary, state.evidenceInput, state.keywords].join("\n\n");
+}
+
+function evaluateEssentialCriteria() {
+  const source = combinedEvaluationText();
+  const normalizedSource = normalize(source);
+  return ESSENTIAL_CHECKS.map((check) => {
+    const matchedTerms = check.terms.filter((term) => normalizedSource.includes(term.toLowerCase()));
+    const statusCode = matchedTerms.length >= Math.min(2, check.terms.length) ? "pass" : matchedTerms.length ? "partial" : "fail";
+    return {
+      ...check,
+      matchedTerms,
+      statusCode,
+      status: statusCode === "pass" ? "충족 가능" : statusCode === "partial" ? "검토 필요" : "미충족/증빙 필요",
+      evidence: matchedTerms.length ? evidenceSnippet(source, matchedTerms) : `[증빙 필요] ${check.label} 관련 정책, 수치, 목표 또는 검증자료를 추가하세요.`,
+    };
+  });
+}
+
+function selectedSectorRule() {
+  return SECTOR_RULES[state.sector] || SECTOR_RULES.GEN;
+}
+
+function isSectorSpecificRow(row) {
+  const tags = Array.isArray(row.sectorTags) ? row.sectorTags : [];
+  const flag = text(row.sectorFlag || row.sector_flag).trim();
+  return Boolean(flag || tags.length);
+}
+
+function isSelectedSectorRow(row) {
+  const rule = selectedSectorRule();
+  if (!rule || state.sector === "GEN") return !isSectorSpecificRow(row);
+  const haystack = normalize([
+    row.sectorFlag,
+    row.sector_flag,
+    ...(Array.isArray(row.sectorTags) ? row.sectorTags : []),
+    row.category,
+    row.question,
+    row.question_ko,
+    row.scoring_en,
+  ].join(" "));
+  return rule.tags.some((tag) => haystack.includes(tag.toLowerCase())) || rule.terms.some((term) => haystack.includes(term.toLowerCase()));
+}
+
+function sectorApplicabilityRows() {
+  return state.rows
+    .filter(isSectorSpecificRow)
+    .map((row) => ({
+      row,
+      qn: questionNumber(row),
+      applicable: isSelectedSectorRow(row),
+      reason: isSelectedSectorRow(row) ? `${selectedSectorRule().label} 섹터 특수 문항 후보` : "현재 선택 섹터와 직접 매칭되지 않음",
+    }));
+}
+
+function improvementForCondition(condition) {
+  if (condition.statusCode === "pass") return "";
+  const base = condition.detail || condition.label;
+  return `[증빙 필요] ${base} 조건을 충족하도록 응답 본문에 선택값, 정량값, 산정기간, 책임조직, 증빙 위치를 같은 문항 안에 추가하세요.`;
+}
+
+function scoreTotals(rows = state.rows) {
+  const totals = {
+    D: { numerator: 0, denominator: 0 },
+    A: { numerator: 0, denominator: 0 },
+    M: { numerator: 0, denominator: 0 },
+    L: { numerator: 0, denominator: 0 },
+  };
+  for (const row of rows) {
+    const qn = questionNumber(row);
+    const record = draftRecord(qn);
+    const scores = scoreDraft(row, record?.draft || "", record?.evidence || state.evidenceLibrary, record?.keywords || state.keywords, record?.method || "rule");
+    for (const item of scores) {
+      if (!totals[item.level]) totals[item.level] = { numerator: 0, denominator: 0 };
+      totals[item.level].numerator += item.calculation.numerator || 0;
+      totals[item.level].denominator += item.calculation.denominator || 0;
+    }
+  }
+  return totals;
 }
 
 function cloneTemplate(id) {
@@ -953,10 +1272,68 @@ function renderAllocationTables(row) {
   `;
 }
 
+function renderScoreSummary(scores) {
+  if (!scores.length) return "";
+  return `
+    <div class="score-summary">
+      <table class="table-like compact-table">
+        <thead>
+          <tr><th>수준</th><th>상태</th><th>예상점수</th><th>충족률</th><th>신뢰도</th></tr>
+        </thead>
+        <tbody>
+          ${scores
+            .map(
+              (item) => `
+                <tr>
+                  <td><strong>${escapeHtml(item.level)}</strong> ${escapeHtml(item.name)}</td>
+                  <td><span class="status-badge ${statusClass(item.statusCode)}">${escapeHtml(item.status)}</span></td>
+                  <td>${escapeHtml(formatPointValue(item.earnedPoints))} / ${escapeHtml(formatPointValue(item.maxPoints))}</td>
+                  <td>${Math.round(item.ratio * 100)}%</td>
+                  <td><span class="status-badge ${statusClass(item.confidence.code)}">${escapeHtml(item.confidence.label)}</span></td>
+                </tr>
+              `,
+            )
+            .join("")}
+        </tbody>
+      </table>
+      <p class="table-note">예상점수는 사전평가 보조값입니다. route, best row, 산업별 예외는 원문 기준으로 최종 확인해야 합니다.</p>
+    </div>
+  `;
+}
+
+function renderConditionRows(item) {
+  return `
+    <table class="table-like condition-table">
+      <thead>
+        <tr><th>평가기준 조건</th><th>판정</th><th>응답/증빙 근거 또는 부족 사유</th></tr>
+      </thead>
+      <tbody>
+        ${item.conditionRows
+          .map(
+            (condition) => `
+              <tr>
+                <td>
+                  <strong>${escapeHtml(condition.label)}</strong>
+                  ${condition.route ? `<div class="condition-terms">${escapeHtml(condition.route)}</div>` : ""}
+                  <div>${escapeHtml(condition.detail || "")}</div>
+                  ${condition.terms?.length ? `<div class="condition-terms">${escapeHtml(condition.terms.slice(0, 6).join(", "))}</div>` : ""}
+                </td>
+                <td><span class="status-badge ${statusClass(condition.statusCode)}">${escapeHtml(condition.status)}</span></td>
+                <td>${escapeHtml(condition.evidence || "근거 없음")}</td>
+              </tr>
+            `,
+          )
+          .join("")}
+      </tbody>
+    </table>
+  `;
+}
+
 function renderFulfillment(row, draft) {
   const evidence = state.evidenceInput || state.evidenceLibrary;
-  const scores = scoreDraft(row, draft, evidence, state.keywords);
-  return scores
+  const record = draftRecord(questionNumber(row));
+  const scores = scoreDraft(row, draft, evidence, state.keywords, record?.method || "manual");
+  const cards = scores
     .map(
       (item) => `
         <article class="fulfillment-card">
@@ -964,13 +1341,22 @@ function renderFulfillment(row, draft) {
             <h3>${escapeHtml(item.level)} ${escapeHtml(item.name)} · ${escapeHtml(item.points)}</h3>
             <span class="status-badge ${statusClass(item.statusCode)}">${escapeHtml(item.status)}</span>
           </div>
+          <div class="score-line">
+            <span>예상점수 <strong>${escapeHtml(formatPointValue(item.earnedPoints))} / ${escapeHtml(formatPointValue(item.maxPoints))}</strong></span>
+            <span>충족률 <strong>${Math.round(item.ratio * 100)}%</strong></span>
+            <span>평가 신뢰도 <strong>${escapeHtml(item.confidence.label)}</strong></span>
+          </div>
           <p><strong>확인된 요소</strong>: ${escapeHtml(item.matched.map((signal) => signal.label).join(", ") || "없음")}</p>
           <p><strong>확인할 요소</strong>: ${escapeHtml(item.signals.map((signal) => signal.label).join(", "))}</p>
+          ${renderConditionRows(item)}
+          ${item.calculation.notes.length ? `<p class="table-note">공식 점수 계산 참고: ${escapeHtml(item.calculation.notes.join(" · "))}</p>` : ""}
+          <p class="table-note">${escapeHtml(item.confidence.note)}</p>
           <div class="criteria-text">${localizedHtml(item.criteria, item.criteria)}</div>
         </article>
       `,
     )
     .join("");
+  return `${renderScoreSummary(scores)}${cards}`;
 }
 
 function renderWriter() {
@@ -1041,8 +1427,9 @@ function renderDeductionList(rows) {
           </div>
           <div>
             <strong>${escapeHtml(questionTitle(row))}</strong>
-            <p>${escapeHtml(item.level)} ${escapeHtml(item.name)} 기준: ${escapeHtml(item.status)}</p>
-            <div class="improvement-box">${escapeHtml(action)}</div>
+            <p>${escapeHtml(item.level)} ${escapeHtml(item.name)} 기준: ${escapeHtml(item.status)} · 예상점수 ${escapeHtml(formatPointValue(item.earnedPoints))}/${escapeHtml(formatPointValue(item.maxPoints))} · 신뢰도 ${escapeHtml(item.confidence.label)}</p>
+            <p class="table-note">부족 조건: ${escapeHtml(item.conditionRows.filter((condition) => condition.statusCode !== "pass").map((condition) => condition.label).join(", ") || "세부 조건 원문 확인 필요")}</p>
+            <div class="improvement-box">${escapeHtml(item.conditionRows.filter((condition) => condition.statusCode !== "pass").map(improvementForCondition).filter(Boolean).slice(0, 3).join("\n") || action)}</div>
           </div>
           <div>
             <span class="status-badge ${statusClass(item.statusCode)}">${escapeHtml(item.status)}</span>
@@ -1053,13 +1440,105 @@ function renderDeductionList(rows) {
     .join("");
 }
 
+function renderEssentialPanel() {
+  const rows = evaluateEssentialCriteria();
+  const riskCount = rows.filter((row) => row.statusCode !== "pass").length;
+  return `
+    <div class="panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">필수조건</p>
+          <h2>A/A- 등급 상한 리스크</h2>
+        </div>
+        <span class="status-badge ${riskCount ? "status-partial" : "status-pass"}">${riskCount ? `${riskCount}개 검토 필요` : "주요 조건 충족 가능"}</span>
+      </div>
+      <table class="table-like">
+        <thead><tr><th>필수조건</th><th>판정</th><th>근거/보완</th></tr></thead>
+        <tbody>
+          ${rows
+            .map(
+              (row) => `
+                <tr>
+                  <td><strong>${escapeHtml(row.label)}</strong><div class="condition-terms">${escapeHtml(row.levels.join(", "))}</div></td>
+                  <td><span class="status-badge ${statusClass(row.statusCode)}">${escapeHtml(row.status)}</span></td>
+                  <td>${escapeHtml(row.evidence)}</td>
+                </tr>
+              `,
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderSectorPanel() {
+  const rows = sectorApplicabilityRows();
+  const applicable = rows.filter((item) => item.applicable);
+  return `
+    <div class="panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">산업 특수 문항</p>
+          <h2>${escapeHtml(selectedSectorRule().label)} 섹터 적용 점검</h2>
+        </div>
+        <span class="status-badge status-partial">${applicable.length}개 적용 후보</span>
+      </div>
+      <table class="table-like">
+        <thead><tr><th>문항</th><th>적용</th><th>사유</th></tr></thead>
+        <tbody>
+          ${(applicable.length ? applicable : rows.slice(0, 12))
+            .slice(0, 30)
+            .map(
+              (item) => `
+                <tr>
+                  <td><strong>${escapeHtml(item.qn)}</strong><br />${escapeHtml(questionTitle(item.row))}</td>
+                  <td><span class="status-badge ${item.applicable ? "status-pass" : "status-fail"}">${item.applicable ? "적용 후보" : "비적용 후보"}</span></td>
+                  <td>${escapeHtml(item.reason)}</td>
+                </tr>
+              `,
+            )
+            .join("")}
+        </tbody>
+      </table>
+      <p class="table-note">산업 특수성은 sector tag와 문항 원문 키워드 기반의 사전 필터입니다. 최종 적용 여부는 CDP 산업분류 원문과 대조하세요.</p>
+    </div>
+  `;
+}
+
+function renderScoreTotalPanel() {
+  const totals = scoreTotals(state.rows.filter((row) => !isSectorSpecificRow(row) || isSelectedSectorRow(row)));
+  return `
+    <div class="panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">배점 요약</p>
+          <h2>D/A/M/L 예상 numerator / denominator</h2>
+        </div>
+      </div>
+      <table class="table-like compact-table">
+        <thead><tr><th>수준</th><th>Numerator</th><th>Denominator</th><th>충족률</th></tr></thead>
+        <tbody>
+          ${["D", "A", "M", "L"]
+            .map((level) => {
+              const item = totals[level] || { numerator: 0, denominator: 0 };
+              const pct = item.denominator ? Math.round((item.numerator / item.denominator) * 100) : 0;
+              return `<tr><td><strong>${level}</strong></td><td>${formatPointValue(item.numerator)}</td><td>${formatPointValue(item.denominator)}</td><td>${pct}%</td></tr>`;
+            })
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
 function renderEvaluation() {
   const fragment = cloneTemplate("#evaluationTemplate");
   fragment.querySelectorAll("[data-eval-scope]").forEach((button) => {
     button.classList.toggle("primary-button", button.dataset.evalScope === state.evaluationScope);
     button.classList.toggle("ghost-button", button.dataset.evalScope !== state.evaluationScope);
   });
-  fragment.querySelector('[data-field="deductionTable"]').innerHTML = renderDeductionList(deductionRows());
+  fragment.querySelector('[data-field="deductionTable"]').innerHTML = [renderScoreTotalPanel(), renderEssentialPanel(), renderSectorPanel(), renderDeductionList(deductionRows())].join("");
   app.replaceChildren(fragment);
 }
 
@@ -1126,16 +1605,79 @@ function exportRows() {
   return state.rows.map((row) => {
     const qn = questionNumber(row);
     const record = draftRecord(qn);
-    const scores = scoreDraft(row, record?.draft || "", record?.evidence || state.evidenceLibrary, record?.keywords || state.keywords);
+    const scores = scoreDraft(row, record?.draft || "", record?.evidence || state.evidenceLibrary, record?.keywords || state.keywords, record?.method || "rule");
     return {
       module: moduleId(row),
       question: qn,
       title: questionTitle(row),
       sectorFlag: row.sectorFlag || row.sector_flag || "",
+      sectorApplicable: !isSectorSpecificRow(row) || isSelectedSectorRow(row) ? "Y" : "N",
       status: scores.map((item) => `${item.level}:${item.status}`).join("; "),
+      expectedScore: scores.map((item) => `${item.level}:${formatPointValue(item.earnedPoints)}/${formatPointValue(item.maxPoints)}`).join("; "),
+      confidence: scores.map((item) => `${item.level}:${item.confidence.label}`).join("; "),
+      engine: record?.method || "rule",
+      scoreNotes: scores.flatMap((item) => item.calculation.notes.map((note) => `${item.level}:${note}`)).join("; "),
+      missingConditions: scores
+        .flatMap((item) => item.conditionRows.filter((condition) => condition.statusCode !== "pass").map((condition) => `${item.level}-${condition.label}`))
+        .join("; "),
+      evidenceMapping: scores
+        .flatMap((item) => item.conditionRows.filter((condition) => condition.statusCode === "pass").map((condition) => `${item.level}-${condition.label}: ${condition.evidence}`))
+        .join(" | "),
       draft: record?.draft || "",
     };
   });
+}
+
+function workbookPayload() {
+  const allRows = exportRows();
+  const deductions = deductionRows("all").map(({ row, qn, item }) => [
+    moduleId(row),
+    qn,
+    questionTitle(row),
+    item.level,
+    item.status,
+    `${formatPointValue(item.earnedPoints)}/${formatPointValue(item.maxPoints)}`,
+    item.confidence.label,
+    item.conditionRows.filter((condition) => condition.statusCode !== "pass").map((condition) => condition.detail || condition.label).join("\n"),
+    item.conditionRows.filter((condition) => condition.statusCode !== "pass").map(improvementForCondition).join("\n"),
+  ]);
+  const essentials = evaluateEssentialCriteria().map((item) => [item.label, item.status, item.levels.join(", "), item.matchedTerms.join(", "), item.evidence]);
+  const sectorRows = sectorApplicabilityRows().map((item) => [moduleId(item.row), item.qn, questionTitle(item.row), item.applicable ? "적용 후보" : "비적용 후보", item.reason]);
+  const totals = scoreTotals(state.rows.filter((row) => !isSectorSpecificRow(row) || isSelectedSectorRow(row)));
+  const evidenceMapping = state.rows.flatMap((row) => {
+    const qn = questionNumber(row);
+    const record = draftRecord(qn);
+    const scores = scoreDraft(row, record?.draft || "", record?.evidence || state.evidenceLibrary, record?.keywords || state.keywords, record?.method || "rule");
+    return scores.flatMap((item) =>
+      item.conditionRows.map((condition) => [
+        moduleId(row),
+        qn,
+        item.level,
+        condition.label,
+        condition.detail,
+        condition.status,
+        condition.evidence,
+        record?.method || "rule",
+      ]),
+    );
+  });
+  return {
+    filename: `cdp-preassessment-${new Date().toISOString().slice(0, 10)}.xlsx`,
+    sheets: [
+      {
+        name: "전체 문항",
+        rows: [["Module", "Question", "Title", "Sector Flag", "Sector Applicable", "Status", "Expected Score", "Confidence", "Engine", "Score Notes", "Missing Conditions", "Evidence Mapping", "Draft"], ...allRows.map((row) => [row.module, row.question, row.title, row.sectorFlag, row.sectorApplicable, row.status, row.expectedScore, row.confidence, row.engine, row.scoreNotes, row.missingConditions, row.evidenceMapping, row.draft])],
+      },
+      { name: "감점 문항", rows: [["Module", "Question", "Title", "Level", "Status", "Expected Score", "Confidence", "Missing Conditions", "Improvement"], ...deductions] },
+      { name: "필수조건", rows: [["Condition", "Status", "Target Grade", "Matched Terms", "Evidence or Gap"], ...essentials] },
+      { name: "산업특수문항", rows: [["Module", "Question", "Title", "Applicability", "Reason"], ...sectorRows] },
+      { name: "배점요약", rows: [["Level", "Numerator", "Denominator", "Fulfillment"], ...["D", "A", "M", "L"].map((level) => {
+        const item = totals[level] || { numerator: 0, denominator: 0 };
+        return [level, formatPointValue(item.numerator), formatPointValue(item.denominator), item.denominator ? `${Math.round((item.numerator / item.denominator) * 100)}%` : "0%"];
+      })] },
+      { name: "증빙매핑", rows: [["Module", "Question", "Level", "Condition", "Criteria Detail", "Status", "Evidence or Gap", "Engine"], ...evidenceMapping] },
+    ],
+  };
 }
 
 function renderExport() {
@@ -1143,7 +1685,7 @@ function renderExport() {
   const rows = exportRows();
   fragment.querySelector('[data-field="exportTable"]').innerHTML = `
     <table class="table-like">
-      <thead><tr><th>Module</th><th>Question</th><th>Status</th><th>Draft chars</th></tr></thead>
+      <thead><tr><th>Module</th><th>Question</th><th>Sector</th><th>Status</th><th>Expected Score</th><th>Confidence</th><th>Engine</th><th>Draft chars</th></tr></thead>
       <tbody>
         ${rows
           .map(
@@ -1151,7 +1693,11 @@ function renderExport() {
               <tr>
                 <td>${escapeHtml(row.module)}</td>
                 <td>${escapeHtml(row.question)}</td>
+                <td>${escapeHtml(row.sectorApplicable)}</td>
                 <td>${escapeHtml(row.status)}</td>
+                <td>${escapeHtml(row.expectedScore)}</td>
+                <td>${escapeHtml(row.confidence)}</td>
+                <td>${escapeHtml(row.engine)}</td>
                 <td>${charCount(row.draft)}</td>
               </tr>
             `,
@@ -1198,6 +1744,8 @@ function exportJson() {
     company: state.company,
     sector: state.sector,
     drafts: state.drafts,
+    evaluationRows: exportRows(),
+    workbook: workbookPayload(),
     evidenceCharacters: charCount(state.evidenceLibrary),
   };
   download("cdp-writer-export.json", JSON.stringify(payload, null, 2), "application/json;charset=utf-8");
@@ -1208,12 +1756,32 @@ function csvEscape(value) {
 }
 
 function exportCsv() {
-  const header = ["Module", "Question", "Title", "Sector Flag", "Status", "Draft"];
+  const header = ["Module", "Question", "Title", "Sector Flag", "Sector Applicable", "Status", "Expected Score", "Confidence", "Engine", "Score Notes", "Missing Conditions", "Evidence Mapping", "Draft"];
   const lines = [header.map(csvEscape).join(",")];
   for (const row of exportRows()) {
-    lines.push([row.module, row.question, row.title, row.sectorFlag, row.status, row.draft].map(csvEscape).join(","));
+    lines.push([row.module, row.question, row.title, row.sectorFlag, row.sectorApplicable, row.status, row.expectedScore, row.confidence, row.engine, row.scoreNotes, row.missingConditions, row.evidenceMapping, row.draft].map(csvEscape).join(","));
   }
   download("cdp-writer-export.csv", `\ufeff${lines.join("\n")}`, "text/csv;charset=utf-8");
+}
+
+async function exportXlsx() {
+  const payload = workbookPayload();
+  const response = await fetch(apiUrl("/api/export-xlsx"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+    throw new Error(error.error || `HTTP ${response.status}`);
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = payload.filename;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 async function extractFiles(files) {
@@ -1284,7 +1852,7 @@ document.addEventListener("click", async (event) => {
   if (target.id === "generateButton") {
     const row = currentRow();
     const draft = composeDraft(row);
-    saveDraft(questionNumber(row), draft);
+    saveDraft(questionNumber(row), draft, { method: "rule" });
     renderWriter();
     return;
   }
@@ -1294,7 +1862,7 @@ document.addEventListener("click", async (event) => {
     target.textContent = "GPT 생성 중...";
     try {
       const draft = await generateGptDraft(row);
-      saveDraft(questionNumber(row), draft);
+      saveDraft(questionNumber(row), draft, { method: "gpt" });
       renderWriter();
     } catch (error) {
       alert(`GPT 답변 생성에 실패했습니다.\n\n${error.message}\n\n로컬 서버에서 OPENAI_API_KEY를 설정한 뒤 다시 실행하세요.`);
@@ -1304,12 +1872,12 @@ document.addEventListener("click", async (event) => {
     return;
   }
   if (target.id === "saveDraftButton") {
-    saveDraft(state.selectedQuestion, currentDraftText());
+    saveDraft(state.selectedQuestion, currentDraftText(), { method: "manual" });
     renderWriter();
     return;
   }
   if (target.id === "evaluateDraftButton") {
-    saveDraft(state.selectedQuestion, currentDraftText());
+    saveDraft(state.selectedQuestion, currentDraftText(), { method: "manual" });
     renderWriter();
     return;
   }
@@ -1319,7 +1887,7 @@ document.addEventListener("click", async (event) => {
   }
   if (target.id === "generateAllButton") {
     for (const row of state.rows) {
-      saveDraft(questionNumber(row), composeDraft(row, { evidence: state.evidenceLibrary, keywords: state.keywords }));
+      saveDraft(questionNumber(row), composeDraft(row, { evidence: state.evidenceLibrary, keywords: state.keywords }), { method: "rule" });
     }
     renderEvaluation();
     return;
@@ -1356,6 +1924,13 @@ document.addEventListener("click", async (event) => {
   }
   if (target.dataset.export === "csv") exportCsv();
   if (target.dataset.export === "json") exportJson();
+  if (target.dataset.export === "xlsx") {
+    try {
+      await exportXlsx();
+    } catch (error) {
+      alert(`XLSX 내보내기에 실패했습니다.\n\n${error.message}\n\n로컬 서버에서 실행 중인지 확인하세요.`);
+    }
+  }
 });
 
 document.addEventListener("input", (event) => {
@@ -1371,7 +1946,7 @@ document.addEventListener("input", (event) => {
   if (target.id === "draftText") {
     const counter = document.querySelector('[data-field="charCounter"]');
     if (counter) counter.textContent = `${charCount(target.value)}자 / ${state.charLimit}자`;
-    saveDraft(state.selectedQuestion, target.value);
+    saveDraft(state.selectedQuestion, target.value, { method: "manual" });
   }
   if (target.id === "evidenceLibraryText") {
     state.evidenceLibrary = target.value;
