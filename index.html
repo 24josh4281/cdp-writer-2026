@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>CDP 작성기 2026</title>
-    <link rel="stylesheet" href="./styles.css?v=eval-engine-v2" />
+    <link rel="stylesheet" href="./styles.css?v=api-link-v1" />
   </head>
   <body>
     <header class="app-header">
@@ -17,6 +17,16 @@
           <option value="./data/cdp_2026_full_dataset.json">2026 전체 기업 질문지</option>
           <option value="./data/cdp_cc_ch_model_answers.json">2025 기후변화 화학 파일럿</option>
         </select>
+        <label class="api-control" title="외부 공개 링크에서 로컬/공개 API 서버를 연결합니다.">
+          <span>API 서버</span>
+          <input id="apiBaseUrl" type="url" placeholder="http://127.0.0.1:8780" />
+        </label>
+        <label class="api-control api-token-control" title="서버에 CDP_API_TOKEN을 설정한 경우 입력합니다.">
+          <span>토큰</span>
+          <input id="apiToken" type="password" placeholder="선택" autocomplete="off" />
+        </label>
+        <button id="apiCheckButton" type="button" class="ghost-button">API 연결</button>
+        <span id="apiStatus" class="api-status">API 미확인</span>
         <div class="segmented" aria-label="언어 보기">
           <button type="button" data-language="ko" class="is-active">한국어</button>
           <button type="button" data-language="en">영문</button>
@@ -257,6 +267,6 @@
       </section>
     </template>
 
-    <script src="./app.js?v=eval-engine-v2"></script>
+    <script src="./app.js?v=api-link-v1"></script>
   </body>
 </html>

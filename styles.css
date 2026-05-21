@@ -76,6 +76,43 @@ textarea {
   flex-wrap: wrap;
 }
 
+.api-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 5px 8px;
+  border: 1px solid #b9c8d1;
+  background: #fff;
+}
+
+.api-control span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.api-control input {
+  width: 210px;
+  min-height: 24px;
+  border: 0;
+  outline: 0;
+  color: var(--ink);
+}
+
+.api-token-control input {
+  width: 86px;
+}
+
+.api-status {
+  border: 1px solid var(--line);
+  background: var(--soft);
+  padding: 7px 9px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .segmented {
   display: inline-flex;
   border: 1px solid #b9c8d1;
@@ -733,7 +770,9 @@ textarea {
   }
 
   .header-actions,
-  .header-actions select {
+  .header-actions select,
+  .api-control,
+  .api-control input {
     width: 100%;
   }
 

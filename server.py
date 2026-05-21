@@ -30,6 +30,15 @@ MAX_GENERATE_REQUEST_BYTES = 1 * 1024 * 1024
 MAX_EXPORT_REQUEST_BYTES = 20 * 1024 * 1024
 MAX_AI_INPUT_CHARS = 24_000
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
+DEFAULT_ALLOWED_ORIGINS = {
+    "http://127.0.0.1:8780",
+    "http://localhost:8780",
+    "http://127.0.0.1:8781",
+    "http://localhost:8781",
+    "https://raw.githack.com",
+    "https://rawcdn.githack.com",
+    "https://24josh4281.github.io",
+}
 
 
 def trim_extracted_text(value: str) -> str:
@@ -43,6 +52,24 @@ def clamp_chars(value: Any, limit: int = MAX_AI_INPUT_CHARS) -> str:
     if len(text_value) <= limit:
         return text_value
     return f"{text_value[:limit]}\n\n[입력 내용이 길어 {limit:,}자로 축약되었습니다.]"
+
+
+def allowed_origins() -> set[str]:
+    configured = {
+        origin.strip().rstrip("/")
+        for origin in os.environ.get("CDP_ALLOWED_ORIGINS", "").split(",")
+        if origin.strip()
+    }
+    return DEFAULT_ALLOWED_ORIGINS | configured
+
+
+def is_allowed_origin(origin: str) -> bool:
+    if not origin:
+        return False
+    normalized = origin.rstrip("/")
+    if normalized in allowed_origins():
+        return True
+    return normalized.startswith("http://127.0.0.1:") or normalized.startswith("http://localhost:")
 
 
 def checked_zip(data: bytes) -> zipfile.ZipFile:
@@ -469,9 +496,29 @@ class Handler(SimpleHTTPRequestHandler):
             relative = Path("index.html")
         return str(ROOT / relative)
 
+    def send_cors_headers(self) -> None:
+        origin = self.headers.get("Origin", "")
+        if is_allowed_origin(origin):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-CDP-API-Token")
+            self.send_header("Access-Control-Expose-Headers", "Content-Disposition")
+
     def end_headers(self) -> None:
         self.send_header("Cache-Control", "no-store")
+        self.send_cors_headers()
         super().end_headers()
+
+    def check_api_token(self) -> bool:
+        expected = os.environ.get("CDP_API_TOKEN", "").strip()
+        if not expected:
+            return True
+        provided = self.headers.get("X-CDP-API-Token", "").strip()
+        if provided == expected:
+            return True
+        self.send_json(401, {"ok": False, "error": "Invalid or missing CDP API token"})
+        return False
 
     def send_json(self, status: int, payload: dict[str, Any]) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -506,15 +553,31 @@ class Handler(SimpleHTTPRequestHandler):
         return True
 
     def do_GET(self) -> None:
+        if self.path.split("?", 1)[0] == "/api/health":
+            self.send_json(200, {
+                "ok": True,
+                "name": "CDP Writer API",
+                "features": ["extract", "generate", "export-xlsx"],
+                "tokenRequired": bool(os.environ.get("CDP_API_TOKEN", "").strip()),
+                "openaiConfigured": bool(os.environ.get("OPENAI_API_KEY", "").strip()),
+            })
+            return
         if self.path in {"/", ""}:
             self.path = "/index.html"
         if self.send_compressed_file():
             return
         return super().do_GET()
 
+    def do_OPTIONS(self) -> None:
+        self.send_response(204)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_POST(self) -> None:
         if self.path not in {"/api/extract", "/api/generate", "/api/export-xlsx"}:
             self.send_json(404, {"ok": False, "error": "Unknown endpoint"})
+            return
+        if not self.check_api_token():
             return
 
         try:

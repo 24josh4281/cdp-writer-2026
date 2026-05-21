@@ -4,8 +4,20 @@ const workspaceStorage = createWorkspaceStorage();
 
 const app = document.querySelector("#app");
 const datasetSelect = document.querySelector("#datasetSelect");
+const apiBaseUrlInput = document.querySelector("#apiBaseUrl");
+const apiTokenInput = document.querySelector("#apiToken");
+const apiCheckButton = document.querySelector("#apiCheckButton");
+const apiStatus = document.querySelector("#apiStatus");
 const exportJsonButton = document.querySelector("#exportJsonButton");
 const exportCsvButton = document.querySelector("#exportCsvButton");
+
+function defaultApiBaseUrl() {
+  if (window.CDP_API_BASE_URL) return window.CDP_API_BASE_URL;
+  if (location.hostname.includes("raw.githack.com") || location.hostname.includes("rawcdn.githack.com") || location.hostname.includes("github.io")) {
+    return "http://127.0.0.1:8780";
+  }
+  return "";
+}
 
 const state = {
   dataset: null,
@@ -27,6 +39,8 @@ const state = {
   language: "ko",
   guideTab: "guidance",
   referenceKey: "",
+  apiBaseUrl: defaultApiBaseUrl(),
+  apiToken: "",
 };
 
 const SIGNALS = [
@@ -101,9 +115,49 @@ function createWorkspaceStorage() {
 }
 
 function apiUrl(path) {
-  const configured = text(window.CDP_API_BASE_URL || "").trim();
+  const configured = normalizeApiBaseUrl(state.apiBaseUrl || window.CDP_API_BASE_URL || "");
   if (!configured) return path;
   return new URL(path, configured.endsWith("/") ? configured : `${configured}/`).toString();
+}
+
+function normalizeApiBaseUrl(value) {
+  return text(value).trim().replace(/\/+$/, "");
+}
+
+function apiHeaders(extra = {}) {
+  const headers = { ...extra };
+  if (state.apiToken) headers["X-CDP-API-Token"] = state.apiToken;
+  return headers;
+}
+
+function setApiStatus(code, message) {
+  if (!apiStatus) return;
+  apiStatus.textContent = message;
+  apiStatus.classList.toggle("status-pass", code === "pass");
+  apiStatus.classList.toggle("status-partial", code === "partial");
+  apiStatus.classList.toggle("status-fail", code === "fail");
+}
+
+function syncApiInputs() {
+  if (apiBaseUrlInput) apiBaseUrlInput.value = state.apiBaseUrl || "";
+  if (apiTokenInput) apiTokenInput.value = state.apiToken || "";
+  setApiStatus(state.apiBaseUrl ? "partial" : "partial", state.apiBaseUrl ? "API 설정됨" : "기본 API");
+}
+
+async function checkApiConnection() {
+  try {
+    const response = await fetch(apiUrl("/api/health"), {
+      method: "GET",
+      headers: apiHeaders(),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+    setApiStatus("pass", `API 연결됨 · ${payload.features?.join(", ") || "ready"}`);
+    return payload;
+  } catch (error) {
+    setApiStatus("fail", `API 실패: ${error.message}`);
+    throw error;
+  }
 }
 
 function workspaceSnapshot() {
@@ -127,6 +181,8 @@ function workspaceSnapshot() {
     language: state.language,
     guideTab: state.guideTab,
     referenceKey: state.referenceKey,
+    apiBaseUrl: state.apiBaseUrl,
+    apiToken: state.apiToken,
   };
 }
 
@@ -159,6 +215,8 @@ function restoreWorkspace(datasetUrl) {
       language: saved.language || state.language,
       guideTab: saved.guideTab || state.guideTab,
       referenceKey: saved.referenceKey || state.referenceKey,
+      apiBaseUrl: saved.apiBaseUrl || state.apiBaseUrl,
+      apiToken: saved.apiToken || "",
     });
   } catch {
     workspaceStorage.removeItem(STORAGE_KEY);
@@ -176,6 +234,7 @@ function clearWorkspaceStorage() {
   state.selectedModule = "all";
   state.selectedIssue = "all";
   state.selectedQuestion = state.rows[0] ? questionNumber(state.rows[0]) : "";
+  state.apiToken = "";
 }
 
 function clampText(value, limit) {
@@ -948,7 +1007,7 @@ async function generateGptDraft(row) {
   };
   const response = await fetch(apiUrl("/api/generate"), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: apiHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
   });
   const result = await response.json().catch(() => ({ ok: false, error: `HTTP ${response.status}` }));
@@ -1768,7 +1827,7 @@ async function exportXlsx() {
   const payload = workbookPayload();
   const response = await fetch(apiUrl("/api/export-xlsx"), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: apiHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
@@ -1788,7 +1847,7 @@ async function extractFiles(files) {
   if (!files.length) return;
   const formData = new FormData();
   for (const file of files) formData.append("files", file);
-  const response = await fetch(apiUrl("/api/extract"), { method: "POST", body: formData });
+  const response = await fetch(apiUrl("/api/extract"), { method: "POST", headers: apiHeaders(), body: formData });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   const payload = await response.json();
   state.fileResults = payload.files || [];
@@ -1918,7 +1977,19 @@ document.addEventListener("click", async (event) => {
   if (target.id === "clearWorkspaceButton") {
     if (confirm("브라우저에 임시저장된 초안과 증빙 입력을 모두 삭제할까요? 내보낸 CSV/JSON 파일은 영향을 받지 않습니다.")) {
       clearWorkspaceStorage();
+      syncApiInputs();
       render();
+    }
+    return;
+  }
+  if (target.id === "apiCheckButton") {
+    state.apiBaseUrl = normalizeApiBaseUrl(apiBaseUrlInput?.value || "");
+    state.apiToken = text(apiTokenInput?.value || "");
+    persistWorkspace();
+    try {
+      await checkApiConnection();
+    } catch {
+      // Status is already shown in the header.
     }
     return;
   }
@@ -1951,6 +2022,14 @@ document.addEventListener("input", (event) => {
   if (target.id === "evidenceLibraryText") {
     state.evidenceLibrary = target.value;
     if (!state.evidenceInput) state.evidenceInput = target.value;
+  }
+  if (target.id === "apiBaseUrl") {
+    state.apiBaseUrl = normalizeApiBaseUrl(target.value);
+    setApiStatus(state.apiBaseUrl ? "partial" : "partial", state.apiBaseUrl ? "API 설정됨" : "기본 API");
+  }
+  if (target.id === "apiToken") {
+    state.apiToken = target.value;
+    setApiStatus("partial", "API 토큰 입력됨");
   }
   persistWorkspace();
 });
@@ -1998,6 +2077,7 @@ async function loadDataset(url) {
   if (!["dashboard", "writer", "evaluation", "references", "evidence", "export"].includes(state.activeView)) {
     state.activeView = "dashboard";
   }
+  syncApiInputs();
   render();
 }
 

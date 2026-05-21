@@ -76,7 +76,8 @@ flowchart LR
 
 - GitHub Pages 배포 워크플로를 제공해 상시 정적 링크를 유지합니다.
 - 정적 링크에서는 데이터셋 탐색, 작성안내/평가기준 확인, 수동 증빙 붙여넣기, 브라우저 임시저장이 가능합니다.
-- 파일 추출과 GPT 생성은 서버 기능이므로 로컬 서버 또는 별도 보안 서버 배포가 필요합니다.
+- 파일 추출, GPT 생성, XLSX 생성은 서버 기능이므로 화면 상단 `API 서버` 입력값을 통해 로컬 서버 또는 별도 보안 서버에 연결합니다.
+- `server.py`는 `/api/health`, `/api/extract`, `/api/generate`, `/api/export-xlsx`에 CORS를 제공하며, 공개 서버 운영 시 `CDP_API_TOKEN` 헤더로 보호할 수 있습니다.
 
 ## Implementation Map
 
