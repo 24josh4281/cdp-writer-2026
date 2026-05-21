@@ -95,7 +95,8 @@ function localizedPair(en, ko) {
 
 function localizedHtml(en, ko) {
   const english = readableMethodologyText(en);
-  const korean = readableMethodologyText(ko || helperKoreanText(en));
+  const koreanCandidate = text(ko).trim();
+  const korean = readableMethodologyText(shouldRegenerateKorean(koreanCandidate) ? helperKoreanText(en) : koreanCandidate || helperKoreanText(en));
   if (state.language === "ko") return `<div class="localized-block ko">${escapeHtml(korean || english)}</div>`;
   if (state.language === "en") return `<div class="localized-block en">${escapeHtml(english || korean)}</div>`;
   return `
@@ -150,7 +151,57 @@ function readableMethodologyText(value) {
     .trim();
 }
 
+function shouldRegenerateKorean(value) {
+  const source = text(value);
+  if (!source.trim()) return true;
+  return /제공하십시오\s+[a-zA-Z]|조직s|사업es|프로세스es|리스크and|기회 specific|financial planning|To define your|How this time horizon|Because the timing|provide details/i.test(source);
+}
+
+function polishedKoreanOverride(value) {
+  const source = readableMethodologyText(value);
+  const lower = source.toLowerCase();
+
+  if (lower.includes("from (years) (column 1)") && lower.includes("tcfd and tnfd position on time horizons")) {
+    return [
+      "From (years)(열 1) 및 To (years)(열 3)",
+      "단기·중기·장기 시간범위를 정의하기 위해 ‘From’ 및 ‘To’ 연도 열에 각 시간범위의 길이를 입력하십시오. 예를 들어 5년부터 10년까지, 또는 12년부터 25년까지와 같이 작성합니다.",
+      "",
+      "이 시간범위가 전략 및/또는 재무계획과 어떻게 연결되는지(열 4)",
+      "해당 시간범위를 선택한 이유를 설명하고, 이 시간범위의 사용이 귀사의 전략 및/또는 재무계획을 어떻게 뒷받침하는지 설명하십시오.",
+      "전략 또는 재무계획에서 다른 시간범위를 사용하는 경우, 환경 이슈의 식별·평가·관리를 위해 선택한 시간범위가 다른 프로세스에서 사용하는 시간범위와 다른 이유를 설명하십시오.",
+      "",
+      "추가 정보",
+      "",
+      "시간범위에 대한 TCFD 및 TNFD의 입장",
+      "조직마다 영향이 발생하는 시점이 다르기 때문에, 모든 섹터에 동일한 시간범위를 지정하면 각 기업이 자사 사업에 특화된 환경 리스크와 기회를 고려하는 데 제약이 될 수 있습니다.",
+      "TCFD와 TNFD는 시간범위를 별도로 정의하지 않으며, 응답 기업이 자산 또는 인프라의 내용연수, 직면한 환경 리스크의 특성, 사업을 영위하는 섹터와 지역, 그리고 환경 리스크와 기회가 중장기적으로 나타날 수 있다는 점을 고려해 자체 시간범위를 정하도록 권장합니다.",
+      "환경 이슈를 평가할 때에는 평가에 사용하는 시간범위가 적절한지 유의해야 합니다. 많은 조직이 운영 및 재무계획은 1~2년, 전략 및 자본계획은 2~5년 기준으로 수행하지만, 환경 리스크와 기회는 더 긴 기간에 걸쳐 영향을 미칠 수 있습니다.",
+      "따라서 환경 의존도, 영향, 리스크 및 기회를 평가할 때 적절한 시간범위를 고려하는 것이 중요합니다.",
+    ].join("\n");
+  }
+
+  if (lower.includes("points will be awarded per completed cell in proportion to the number of cells displayed")) {
+    return [
+      "표시된 셀 수 대비 작성 완료된 셀 수에 비례하여 점수가 부여됩니다.",
+      "이 문항은 최대 3/3점까지 받을 수 있습니다.",
+    ].join("\n");
+  }
+
+  if (lower.includes("consecutive time horizons entered in rows")) {
+    return [
+      "‘단기’, ‘중기’, ‘장기’ 행에 서로 연속되는 시간범위를 입력하면 3점입니다.",
+      "예: 단기 0~2년, 중기 3~9년, 장기 10년 이상 또는 단기 0~3년, 중기 3~10년, 장기 10년 이상과 같이 작성할 수 있습니다.",
+      "‘장기 시간범위가 개방형입니까?’ 열에서 ‘No’를 선택한 경우, 인식 점수를 받으려면 ‘To (years)’ 열을 반드시 작성해야 합니다.",
+      "이 문항은 최대 3/3점까지 받을 수 있습니다.",
+    ].join("\n");
+  }
+
+  return "";
+}
+
 function helperKoreanText(value) {
+  const override = polishedKoreanOverride(value);
+  if (override) return override;
   const replacements = [
     ["Climate change scoring criteria for all sectors", "기후변화 평가기준 - 전체 섹터"],
     ["Forests scoring criteria for all sectors", "산림 평가기준 - 전체 섹터"],
