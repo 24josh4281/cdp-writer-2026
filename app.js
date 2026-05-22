@@ -41,6 +41,15 @@ const state = {
   referenceKey: "",
   apiBaseUrl: defaultApiBaseUrl(),
   apiToken: "",
+  apiHealth: null,
+  methodologySync: {
+    sourceUrl: "https://myportal.cdp.net/guidance?locale=en",
+    status: "대기",
+    files: [],
+    changes: [],
+    appliedAt: "",
+    appliedCount: 0,
+  },
 };
 
 const SIGNALS = [
@@ -94,6 +103,10 @@ function normalize(value) {
   return text(value).toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+function escapeRegExp(value) {
+  return text(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function charCount(value) {
   return [...text(value)].length;
 }
@@ -138,10 +151,21 @@ function setApiStatus(code, message) {
   apiStatus.classList.toggle("status-fail", code === "fail");
 }
 
+function apiStatusMessage(payload) {
+  if (!payload?.ok) return "API 미확인";
+  const gpt = payload.openaiConfigured ? "GPT 가능" : "GPT 키 없음";
+  const token = payload.tokenRequired ? "토큰 필요" : "토큰 없음";
+  return `API 연결됨 · ${gpt} · ${token}`;
+}
+
 function syncApiInputs() {
   if (apiBaseUrlInput) apiBaseUrlInput.value = state.apiBaseUrl || "";
   if (apiTokenInput) apiTokenInput.value = state.apiToken || "";
-  setApiStatus(state.apiBaseUrl ? "partial" : "partial", state.apiBaseUrl ? "API 설정됨" : "기본 API");
+  if (state.apiHealth) {
+    setApiStatus(state.apiHealth.openaiConfigured ? "pass" : "partial", apiStatusMessage(state.apiHealth));
+  } else {
+    setApiStatus("partial", state.apiBaseUrl ? "API 설정됨" : "기본 API");
+  }
 }
 
 async function checkApiConnection() {
@@ -152,9 +176,11 @@ async function checkApiConnection() {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || !payload.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-    setApiStatus("pass", `API 연결됨 · ${payload.features?.join(", ") || "ready"}`);
+    state.apiHealth = payload;
+    setApiStatus(payload.openaiConfigured ? "pass" : "partial", apiStatusMessage(payload));
     return payload;
   } catch (error) {
+    state.apiHealth = null;
     setApiStatus("fail", `API 실패: ${error.message}`);
     throw error;
   }
@@ -182,7 +208,14 @@ function workspaceSnapshot() {
     guideTab: state.guideTab,
     referenceKey: state.referenceKey,
     apiBaseUrl: state.apiBaseUrl,
-    apiToken: state.apiToken,
+    methodologySync: {
+      sourceUrl: state.methodologySync.sourceUrl,
+      status: state.methodologySync.status,
+      files: state.methodologySync.files,
+      changes: state.methodologySync.changes,
+      appliedAt: state.methodologySync.appliedAt,
+      appliedCount: state.methodologySync.appliedCount,
+    },
   };
 }
 
@@ -216,7 +249,7 @@ function restoreWorkspace(datasetUrl) {
       guideTab: saved.guideTab || state.guideTab,
       referenceKey: saved.referenceKey || state.referenceKey,
       apiBaseUrl: saved.apiBaseUrl || state.apiBaseUrl,
-      apiToken: saved.apiToken || "",
+      methodologySync: saved.methodologySync || state.methodologySync,
     });
   } catch {
     workspaceStorage.removeItem(STORAGE_KEY);
@@ -235,6 +268,16 @@ function clearWorkspaceStorage() {
   state.selectedIssue = "all";
   state.selectedQuestion = state.rows[0] ? questionNumber(state.rows[0]) : "";
   state.apiToken = "";
+  state.apiHealth = null;
+  state.methodologySync = {
+    sourceUrl: "https://myportal.cdp.net/guidance?locale=en",
+    status: "대기",
+    files: [],
+    changes: [],
+    appliedAt: "",
+    appliedCount: 0,
+  };
+  clearMethodologyOverlay();
 }
 
 function clampText(value, limit) {
@@ -650,6 +693,18 @@ function passesIssueFilter(row) {
   return rowIssues(row).some((issue) => issue.toLowerCase() === state.selectedIssue.toLowerCase());
 }
 
+function rowScoringText(row) {
+  return row.syncScoringText || row.fullScoreChecklist_ko || row.scoring_ko || row.fullScoreChecklist || row.full_score_checklist || "";
+}
+
+function rowScoringTextEn(row) {
+  return row.syncScoringText || row.scoring_en || row.fullScoreChecklist || row.full_score_checklist || "";
+}
+
+function rowAllocationText(row) {
+  return row.syncScoringText || row.pointAllocation || row.scoring_en || row.fullScoreChecklist || row.full_score_checklist || "";
+}
+
 function criteriaSections(checklist) {
   const source = text(checklist);
   const matches = [...source.matchAll(/(^|\n)([DAML])\s+([^\n(]+)\(([^)]+)\)\n-?\s*([\s\S]*?)(?=\n\n[DAML]\s+[^\n(]+\(|$)/g)];
@@ -887,7 +942,7 @@ function scoreCalculation(row, section, ratio, conditionRows) {
 function scoreDraft(row, draft, evidence, keywords, method = "rule") {
   const combinedSource = [draft, evidence, keywords].join("\n\n");
   const combined = normalize(combinedSource);
-  const checklist = state.language === "en" ? row.fullScoreChecklist || row.full_score_checklist : row.fullScoreChecklist_ko || row.scoring_ko || row.fullScoreChecklist || row.full_score_checklist;
+  const checklist = state.language === "en" ? rowScoringTextEn(row) : rowScoringText(row);
   return criteriaSections(checklist).map((section) => {
     const signals = atomizeCriteria(section.criteria);
     const conditionRows = signals.map((signal) => signalDetail(signal, combinedSource));
@@ -990,13 +1045,17 @@ function questionPayloadForAi(row) {
     guidance_ko: row.guidance_ko || row.requestedContent_ko || "",
     guidance_en: row.guidance_en || row.requestedContent || "",
     scoring_ko: row.scoring_ko || row.fullScoreChecklist_ko || "",
-    scoring_en: row.scoring_en || row.fullScoreChecklist || row.full_score_checklist || "",
+    scoring_en: rowScoringTextEn(row),
     points: row.points_ko || row.points || "",
     evidenceChecklist: row.evidenceChecklist_ko || row.evidenceChecklist || row.evidence_checklist || "",
   };
 }
 
 async function generateGptDraft(row) {
+  const health = state.apiHealth || (await checkApiConnection());
+  if (!health.openaiConfigured) {
+    throw new Error("GPT 생성은 서버에 OPENAI_API_KEY를 설정한 뒤 사용할 수 있습니다. 파일 추출과 XLSX 생성은 현재 API로 계속 사용할 수 있습니다.");
+  }
   const payload = {
     company: state.company,
     sector: state.sector,
@@ -1147,6 +1206,169 @@ function scoreTotals(rows = state.rows) {
   return totals;
 }
 
+function applicableEvaluationRows() {
+  return state.rows.filter((row) => !isSectorSpecificRow(row) || isSelectedSectorRow(row));
+}
+
+function reviewPriorityRows(limit = 80) {
+  return deductionRows("all")
+    .map(({ row, qn, item }) => {
+      const missing = item.conditionRows.filter((condition) => condition.statusCode !== "pass");
+      const scoreGap = Math.max(0, Number(item.maxPoints || 0) - Number(item.earnedPoints || 0));
+      const severity = (item.statusCode === "fail" ? 3 : 1) + (item.confidence.code === "fail" ? 2 : item.confidence.code === "partial" ? 1 : 0) + Math.min(3, scoreGap);
+      return {
+        module: moduleId(row),
+        question: qn,
+        title: questionTitle(row),
+        level: item.level,
+        status: item.status,
+        confidence: item.confidence.label,
+        scoreGap,
+        severity,
+        missingLabels: missing.map((condition) => condition.label).join(", ") || "세부 조건 원문 확인 필요",
+        firstAction: missing.map(improvementForCondition).filter(Boolean)[0] || "평가기준 원문과 증빙 위치를 대조하세요.",
+      };
+    })
+    .sort((a, b) => b.severity - a.severity || b.scoreGap - a.scoreGap || a.module.localeCompare(b.module) || a.question.localeCompare(b.question))
+    .slice(0, limit);
+}
+
+function evidenceQualityChecks() {
+  const evidenceChars = charCount(state.evidenceLibrary || state.evidenceInput);
+  const draftCount = Object.values(state.drafts).filter((item) => item.draft).length;
+  const extractedOk = state.fileResults.filter((file) => file.ok).length;
+  const extractedFail = state.fileResults.filter((file) => !file.ok).length;
+  return [
+    {
+      item: "회사명",
+      statusCode: state.company && state.company !== "회사명" ? "pass" : "partial",
+      result: state.company && state.company !== "회사명" ? state.company : "기본값 사용 중",
+      action: "기업별 평가 전에 회사명을 실제 법인명으로 바꾸세요.",
+    },
+    {
+      item: "증빙 원문 길이",
+      statusCode: evidenceChars >= 3000 ? "pass" : evidenceChars >= 500 ? "partial" : "fail",
+      result: `${evidenceChars.toLocaleString()}자`,
+      action: "보고서, 검증성명서, 정량 산정표에서 관련 문단을 추가하면 판단 정확도가 올라갑니다.",
+    },
+    {
+      item: "파일 추출 결과",
+      statusCode: extractedFail ? "partial" : extractedOk ? "pass" : "partial",
+      result: `${extractedOk}개 성공 / ${extractedFail}개 실패`,
+      action: "실패 파일은 PDF 암호, 이미지 PDF, 손상 파일 여부를 확인하세요.",
+    },
+    {
+      item: "작성 초안 수",
+      statusCode: draftCount >= Math.min(10, state.rows.length) ? "pass" : draftCount ? "partial" : "fail",
+      result: `${draftCount}개 작성`,
+      action: "우선 M1~M13 주요 문항부터 초안을 생성해 감점 후보를 확인하세요.",
+    },
+    {
+      item: "GPT 생성 준비",
+      statusCode: state.apiHealth?.openaiConfigured ? "pass" : "partial",
+      result: state.apiHealth ? apiStatusMessage(state.apiHealth) : "API 연결 확인 전",
+      action: "GPT 자동 작성이 필요하면 OPENAI_API_KEY 설정 후 서버를 재시작하고 API 연결을 다시 누르세요.",
+    },
+  ];
+}
+
+function qualityGateRows() {
+  const applicableRows = applicableEvaluationRows();
+  const drafted = applicableRows.filter((row) => draftRecord(questionNumber(row))?.draft).length;
+  const deductions = deductionRows("all");
+  const essentialRisks = evaluateEssentialCriteria().filter((row) => row.statusCode !== "pass").length;
+  const lowConfidence = exportRows().filter((row) => row.confidence.includes("판단 불가")).length;
+  const evidenceChars = charCount(state.evidenceLibrary || state.evidenceInput);
+  return [
+    ["작성 커버리지", drafted >= applicableRows.length ? "충족" : "검토 필요", `${drafted}/${applicableRows.length}`, "적용 문항 전체에 초안 또는 실제 응답이 있어야 전체 사전평가가 안정적입니다."],
+    ["감점 후보", deductions.length ? "검토 필요" : "충족", `${deductions.length}건`, "감점 후보는 조건별 증빙 또는 응답 보완으로 줄입니다."],
+    ["필수조건", essentialRisks ? "검토 필요" : "충족", `${essentialRisks}건`, "A/A- 상한 리스크가 있는 필수조건은 별도 증빙을 먼저 확인합니다."],
+    ["평가 신뢰도", lowConfidence ? "검토 필요" : "충족", `${lowConfidence}건`, "판단 불가 문항은 사람이 원문 기준과 증빙을 대조해야 합니다."],
+    ["증빙 충분성", evidenceChars >= 3000 ? "충족" : "검토 필요", `${evidenceChars.toLocaleString()}자`, "증빙 원문이 짧으면 키워드 기반 평가가 과소 또는 과대 추정될 수 있습니다."],
+  ];
+}
+
+function maxScorePathRows(limit = 250) {
+  return applicableEvaluationRows()
+    .slice(0, limit)
+    .flatMap((row) => {
+      const checklist = row.fullScoreChecklist_ko || row.scoring_ko || row.fullScoreChecklist || row.full_score_checklist || "";
+      return criteriaSections(checklist).map((section) => {
+        const atoms = atomizeCriteria(section.criteria);
+        return [
+          moduleId(row),
+          questionNumber(row),
+          questionTitle(row),
+          section.level,
+          formatPointValue(sectionMaxPoints(row, section)),
+          atoms.map((atom) => `${atom.label}: ${atom.detail}`).join("\n"),
+          atoms.flatMap((atom) => atom.terms || []).slice(0, 12).join(", "),
+          "선택값, 정량값, 산정기간, 책임조직, 증빙 위치를 같은 문항 안에서 누락 없이 제시",
+        ];
+      });
+    });
+}
+
+function renderQualityGatePanel() {
+  const checks = qualityGateRows();
+  const evidenceChecks = evidenceQualityChecks();
+  return `
+    <div class="panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">품질 게이트</p>
+          <h2>평가 실행 전 점검</h2>
+        </div>
+        <span class="status-badge ${checks.some((row) => row[1] !== "충족") ? "status-partial" : "status-pass"}">${checks.filter((row) => row[1] !== "충족").length}개 검토</span>
+      </div>
+      <table class="table-like compact-table">
+        <thead><tr><th>점검항목</th><th>상태</th><th>현재값</th><th>조치</th></tr></thead>
+        <tbody>
+          ${checks
+            .map((row) => `<tr><td>${escapeHtml(row[0])}</td><td><span class="status-badge ${row[1] === "충족" ? "status-pass" : "status-partial"}">${escapeHtml(row[1])}</span></td><td>${escapeHtml(row[2])}</td><td>${escapeHtml(row[3])}</td></tr>`)
+            .join("")}
+        </tbody>
+      </table>
+      <h3>증빙 품질</h3>
+      <table class="table-like compact-table">
+        <thead><tr><th>항목</th><th>상태</th><th>현재값</th><th>권장 조치</th></tr></thead>
+        <tbody>
+          ${evidenceChecks
+            .map((item) => `<tr><td>${escapeHtml(item.item)}</td><td><span class="status-badge ${statusClass(item.statusCode)}">${escapeHtml(item.statusCode === "pass" ? "충족" : item.statusCode === "partial" ? "검토" : "부족")}</span></td><td>${escapeHtml(item.result)}</td><td>${escapeHtml(item.action)}</td></tr>`)
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderReviewPriorityPanel() {
+  const rows = reviewPriorityRows(12);
+  return `
+    <div class="panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">검토 큐</p>
+          <h2>우선 확인할 감점 후보</h2>
+        </div>
+        <span class="status-badge ${rows.length ? "status-partial" : "status-pass"}">${rows.length}건</span>
+      </div>
+      ${
+        rows.length
+          ? `<table class="table-like compact-table">
+              <thead><tr><th>문항</th><th>수준</th><th>점수차</th><th>부족 조건</th><th>첫 조치</th></tr></thead>
+              <tbody>
+                ${rows
+                  .map((row) => `<tr><td><strong>${escapeHtml(row.question)}</strong><br />${escapeHtml(row.title)}</td><td>${escapeHtml(row.level)}<br />${escapeHtml(row.confidence)}</td><td>${escapeHtml(formatPointValue(row.scoreGap))}</td><td>${escapeHtml(row.missingLabels)}</td><td>${escapeHtml(row.firstAction)}</td></tr>`)
+                  .join("")}
+              </tbody>
+            </table>`
+          : `<div class="criteria-text">현재 우선 검토할 감점 후보가 없습니다.</div>`
+      }
+    </div>
+  `;
+}
+
 function cloneTemplate(id) {
   return document.querySelector(id).content.cloneNode(true);
 }
@@ -1246,10 +1468,10 @@ function renderCriteriaStack(row) {
 }
 
 function renderScoringCards(row) {
-  const blocks = parseScoringBlocks(row.scoring_en || row.fullScoreChecklist || row.full_score_checklist);
+  const blocks = parseScoringBlocks(rowScoringTextEn(row));
   const koBlocks = parseScoringBlocks(row.scoring_ko || row.fullScoreChecklist_ko || "");
   if (!blocks.length) {
-    return `<article class="criteria-card"><h3>평가기준</h3><div class="criteria-text">${localizedHtml(row.scoring_en || row.fullScoreChecklist || row.full_score_checklist, row.scoring_ko || row.fullScoreChecklist_ko)}</div></article>`;
+    return `<article class="criteria-card"><h3>평가기준</h3><div class="criteria-text">${localizedHtml(rowScoringTextEn(row), row.scoring_ko || row.fullScoreChecklist_ko)}</div></article>`;
   }
   return blocks
     .map(
@@ -1289,7 +1511,7 @@ function renderScoringCards(row) {
 }
 
 function renderAllocationTables(row) {
-  const tables = parseAllocationTables(row.pointAllocation || row.scoring_en || row.fullScoreChecklist || row.full_score_checklist);
+  const tables = parseAllocationTables(rowAllocationText(row));
   if (!tables.length) {
     return `<article class="criteria-card"><h3>점수 배분</h3><div class="criteria-text">${localizedHtml(row.pointAllocation, row.pointAllocation_ko)}</div></article>`;
   }
@@ -1597,7 +1819,14 @@ function renderEvaluation() {
     button.classList.toggle("primary-button", button.dataset.evalScope === state.evaluationScope);
     button.classList.toggle("ghost-button", button.dataset.evalScope !== state.evaluationScope);
   });
-  fragment.querySelector('[data-field="deductionTable"]').innerHTML = [renderScoreTotalPanel(), renderEssentialPanel(), renderSectorPanel(), renderDeductionList(deductionRows())].join("");
+  fragment.querySelector('[data-field="deductionTable"]').innerHTML = [
+    renderQualityGatePanel(),
+    renderScoreTotalPanel(),
+    renderReviewPriorityPanel(),
+    renderEssentialPanel(),
+    renderSectorPanel(),
+    renderDeductionList(deductionRows()),
+  ].join("");
   app.replaceChildren(fragment);
 }
 
@@ -1660,6 +1889,257 @@ function renderReferences() {
   app.replaceChildren(fragment);
 }
 
+function methodologySourceText(files = state.methodologySync.files) {
+  return (files || [])
+    .filter((file) => file.ok && file.text)
+    .map((file) => `[${file.filename}]\n${file.text}`)
+    .join("\n\n");
+}
+
+function firstTitleWords(row) {
+  return [row.title_en || row.title || "", row.title_ko || ""]
+    .flatMap((title) => text(title).split(/\s+/).slice(0, 5))
+    .filter((word) => word.length >= 3)
+    .slice(0, 8);
+}
+
+function findMethodologySegment(source, row) {
+  const qn = questionNumber(row);
+  if (!qn || qn.length < 3) return "";
+  const titleWords = firstTitleWords(row).map(escapeRegExp);
+  const qnPattern = escapeRegExp(qn);
+  const patterns = [
+    new RegExp(`(^|[^\\d.])${qnPattern}\\s*[–-]`, "i"),
+    new RegExp(`(^|[^\\d.])\\(${qnPattern}\\)`, "i"),
+    titleWords.length ? new RegExp(`(^|[^\\d.])${qnPattern}\\s+(?:${titleWords.join("|")})`, "i") : null,
+  ].filter(Boolean);
+  const matches = patterns
+    .map((pattern) => {
+      const match = pattern.exec(source);
+      return match ? match.index + (match[1] ? match[1].length : 0) : -1;
+    })
+    .filter((index) => index >= 0);
+  if (!matches.length) return "";
+  const start = Math.min(...matches);
+  const tail = source.slice(start + qn.length + 8);
+  const next = tail.search(/\n\s*\d+(?:\.\d+){1,3}[a-z]?\s*[–-]/);
+  const end = next >= 0 ? start + qn.length + 8 + next : start + 12000;
+  return clampText(source.slice(start, Math.min(end, source.length)), 12000);
+}
+
+function methodologySignals(segment) {
+  const lower = normalize(segment);
+  const signals = [];
+  if (/scoring criteria|point allocations|disclosure scoring|awareness scoring|management scoring|leadership scoring/i.test(segment)) signals.push("평가기준");
+  if (/requested content|guidance|additional information|change from last year/i.test(segment)) signals.push("작성안내");
+  if (/essential criteria|a list|a-|minimum criteria|verification|transition plan/i.test(segment)) signals.push("필수조건");
+  if (/sector|financial services|chemicals|metals|mining|coal|plastics|biodiversity|forests|water/i.test(segment)) signals.push("산업/이슈");
+  if (lower.includes("route") || lower.includes("best row") || lower.includes("not applicable")) signals.push("채점 경로");
+  return signals;
+}
+
+function allocationDiff(row, segment) {
+  const tables = parseAllocationTables(segment);
+  if (!tables.length) return "";
+  const values = tables[0].values || {};
+  const checks = [
+    ["D", values.dDen],
+    ["A", values.aDen],
+    ["M", values.mDen],
+    ["L", values.lDen],
+  ];
+  const changed = checks
+    .filter(([level, den]) => den !== "" && Number(den) !== Number(row.denominators?.[level] || 0))
+    .map(([level, den]) => `${level}: 현재 ${formatPointValue(Number(row.denominators?.[level] || 0))} → 포털 ${den}`);
+  return changed.join("; ");
+}
+
+function methodologyChangeRows(source) {
+  const rows = [];
+  for (const row of state.rows) {
+    const segment = findMethodologySegment(source, row);
+    if (segment.length < 160) continue;
+    const signals = methodologySignals(segment);
+    if (!signals.length) continue;
+    const oldText = rowScoringTextEn(row);
+    const oldNorm = normalize(oldText);
+    const newNorm = normalize(segment);
+    const oldAtomCount = atomizeCriteria(oldText).length;
+    const newAtomCount = atomizeCriteria(segment).length;
+    const allocation = allocationDiff(row, segment);
+    const textLikelyChanged = oldNorm && newNorm ? !oldNorm.includes(newNorm.slice(0, 500)) && !newNorm.includes(oldNorm.slice(0, 500)) : true;
+    const status = allocation ? "배점 변경 후보" : textLikelyChanged || oldAtomCount !== newAtomCount ? "방법론 변경 후보" : "동일 가능";
+    if (status === "동일 가능") continue;
+    rows.push({
+      id: `${questionNumber(row)}-${rows.length + 1}`,
+      module: moduleId(row),
+      question: questionNumber(row),
+      title: questionTitle(row),
+      status,
+      confidence: allocation ? "높음" : signals.includes("평가기준") ? "중간" : "낮음",
+      signals,
+      allocation,
+      oldChars: charCount(oldText),
+      newChars: charCount(segment),
+      oldAtomCount,
+      newAtomCount,
+      segment,
+      applied: false,
+    });
+  }
+  return rows.slice(0, 250);
+}
+
+function analyzeMethodologySync(files) {
+  const source = methodologySourceText(files);
+  const changes = methodologyChangeRows(source);
+  state.methodologySync.files = files || [];
+  state.methodologySync.changes = changes;
+  state.methodologySync.status = changes.length ? `${changes.length}개 변경 후보` : "변경 후보 없음";
+  state.methodologySync.appliedAt = "";
+  state.methodologySync.appliedCount = 0;
+  clearMethodologyOverlay();
+  persistWorkspace();
+}
+
+function clearMethodologyOverlay() {
+  if (!state.rows) return;
+  for (const row of state.rows) {
+    delete row.syncScoringText;
+    delete row.syncSourceUrl;
+    delete row.syncAppliedAt;
+  }
+}
+
+function restoreMethodologyOverlay() {
+  const changes = state.methodologySync?.changes || [];
+  for (const change of changes.filter((item) => item.applied)) {
+    const row = state.rows.find((item) => questionNumber(item) === change.question);
+    if (!row) continue;
+    row.syncScoringText = change.segment;
+    row.syncSourceUrl = state.methodologySync.sourceUrl;
+    row.syncAppliedAt = state.methodologySync.appliedAt;
+  }
+}
+
+function applyMethodologySyncChanges() {
+  const changes = state.methodologySync.changes || [];
+  let applied = 0;
+  for (const change of changes) {
+    const row = state.rows.find((item) => questionNumber(item) === change.question);
+    if (!row || !change.segment) continue;
+    row.syncScoringText = change.segment;
+    row.syncSourceUrl = state.methodologySync.sourceUrl;
+    row.syncAppliedAt = new Date().toISOString();
+    change.applied = true;
+    applied += 1;
+  }
+  state.methodologySync.appliedAt = new Date().toISOString();
+  state.methodologySync.appliedCount = applied;
+  state.methodologySync.status = applied ? `${applied}개 승인 적용` : "적용할 변경 후보 없음";
+  persistWorkspace();
+}
+
+function methodologySyncReport() {
+  return {
+    exportedAt: new Date().toISOString(),
+    sourceUrl: state.methodologySync.sourceUrl,
+    status: state.methodologySync.status,
+    appliedAt: state.methodologySync.appliedAt,
+    appliedCount: state.methodologySync.appliedCount,
+    files: (state.methodologySync.files || []).map((file) => ({
+      filename: file.filename,
+      ok: file.ok,
+      characters: file.characters,
+      truncated: file.truncated,
+      error: file.error || "",
+    })),
+    changes: (state.methodologySync.changes || []).map((change) => ({
+      module: change.module,
+      question: change.question,
+      title: change.title,
+      status: change.status,
+      confidence: change.confidence,
+      signals: change.signals,
+      allocation: change.allocation,
+      oldChars: change.oldChars,
+      newChars: change.newChars,
+      oldAtomCount: change.oldAtomCount,
+      newAtomCount: change.newAtomCount,
+      applied: Boolean(change.applied),
+    })),
+  };
+}
+
+function methodologySyncRows() {
+  const changes = state.methodologySync.changes || [];
+  return changes.map((change) => [
+    change.module,
+    change.question,
+    change.title,
+    change.status,
+    change.confidence,
+    change.signals.join(", "),
+    change.allocation,
+    change.oldChars,
+    change.newChars,
+    `${change.oldAtomCount} → ${change.newAtomCount}`,
+    change.applied ? "Y" : "N",
+  ]);
+}
+
+function renderSync() {
+  const fragment = cloneTemplate("#syncTemplate");
+  const sync = state.methodologySync;
+  fragment.querySelector("#syncSourceUrl").value = sync.sourceUrl || "https://myportal.cdp.net/guidance?locale=en";
+  fragment.querySelector('[data-field="syncStatus"]').textContent = sync.status || "대기";
+  fragment.querySelector('[data-field="syncSummary"]').innerHTML = [
+    ["파일", `${(sync.files || []).length}개`],
+    ["추출 성공", `${(sync.files || []).filter((file) => file.ok).length}개`],
+    ["변경 후보", `${(sync.changes || []).length}개`],
+    ["승인 적용", `${sync.appliedCount || 0}개`],
+  ]
+    .map(([label, value]) => `<div class="metric-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
+    .join("");
+  fragment.querySelector('[data-field="syncFiles"]').innerHTML = (sync.files || [])
+    .map(
+      (file) => `
+        <div class="status-card">
+          <strong>${escapeHtml(file.filename)}</strong>
+          <p>${file.ok ? `${file.characters}자 추출${file.truncated ? " · 축약됨" : ""}` : escapeHtml(file.error || "추출 실패")}</p>
+        </div>
+      `,
+    )
+    .join("");
+  const changes = sync.changes || [];
+  fragment.querySelector('[data-field="syncChanges"]').innerHTML = changes.length
+    ? `
+      <table class="table-like compact-table">
+        <thead><tr><th>문항</th><th>상태</th><th>신뢰도</th><th>감지 항목</th><th>배점 차이</th><th>조건 수</th><th>적용</th></tr></thead>
+        <tbody>
+          ${changes
+            .map(
+              (change) => `
+                <tr>
+                  <td><strong>${escapeHtml(change.question)}</strong><br />${escapeHtml(change.module)} · ${escapeHtml(change.title)}</td>
+                  <td><span class="status-badge ${change.confidence === "높음" ? "status-pass" : change.confidence === "중간" ? "status-partial" : "status-fail"}">${escapeHtml(change.status)}</span></td>
+                  <td>${escapeHtml(change.confidence)}</td>
+                  <td>${escapeHtml(change.signals.join(", "))}</td>
+                  <td>${escapeHtml(change.allocation || "-")}</td>
+                  <td>${escapeHtml(`${change.oldAtomCount} → ${change.newAtomCount}`)}</td>
+                  <td>${change.applied ? "Y" : "N"}</td>
+                </tr>
+              `,
+            )
+            .join("")}
+        </tbody>
+      </table>
+      <p class="table-note">승인 적용은 원본 데이터셋을 덮어쓰지 않고, 현재 브라우저 세션에서 평가기준 overlay로 적용합니다. 초기화하면 원본 기준으로 돌아갑니다.</p>
+    `
+    : `<div class="criteria-text">아직 분석된 변경 후보가 없습니다. CDP Portal에서 export한 파일을 업로드한 뒤 분석하세요.</div>`;
+  app.replaceChildren(fragment);
+}
+
 function exportRows() {
   return state.rows.map((row) => {
     const qn = questionNumber(row);
@@ -1687,6 +2167,28 @@ function exportRows() {
   });
 }
 
+function safeSpreadsheetValue(value) {
+  const raw = text(value);
+  return /^[=+\-@]/.test(raw.trim()) ? `'${raw}` : raw;
+}
+
+function safeSpreadsheetRows(rows) {
+  return rows.map((row) => row.map(safeSpreadsheetValue));
+}
+
+function apiHealthRows() {
+  const health = state.apiHealth || {};
+  return [
+    ["API 서버", state.apiBaseUrl || "동일 출처"],
+    ["연결 확인", health.ok ? "성공" : "미확인"],
+    ["지원 기능", Array.isArray(health.features) ? health.features.join(", ") : "미확인"],
+    ["GPT 설정", health.openaiConfigured ? "OPENAI_API_KEY 설정됨" : "OPENAI_API_KEY 없음"],
+    ["토큰 보호", health.tokenRequired ? "사용 중" : "미사용"],
+    ["서버 버전", health.version || "-"],
+    ["업로드 제한", health.limits?.maxFileMB ? `${health.limits.maxFileMB}MB/file, ${health.limits.maxFiles} files` : "-"],
+  ];
+}
+
 function workbookPayload() {
   const allRows = exportRows();
   const deductions = deductionRows("all").map(({ row, qn, item }) => [
@@ -1703,6 +2205,9 @@ function workbookPayload() {
   const essentials = evaluateEssentialCriteria().map((item) => [item.label, item.status, item.levels.join(", "), item.matchedTerms.join(", "), item.evidence]);
   const sectorRows = sectorApplicabilityRows().map((item) => [moduleId(item.row), item.qn, questionTitle(item.row), item.applicable ? "적용 후보" : "비적용 후보", item.reason]);
   const totals = scoreTotals(state.rows.filter((row) => !isSectorSpecificRow(row) || isSelectedSectorRow(row)));
+  const reviewRows = reviewPriorityRows(200).map((row) => [row.module, row.question, row.title, row.level, formatPointValue(row.scoreGap), row.confidence, row.missingLabels, row.firstAction]);
+  const qualityRows = qualityGateRows();
+  const evidenceQualityRows = evidenceQualityChecks().map((item) => [item.item, item.statusCode === "pass" ? "충족" : item.statusCode === "partial" ? "검토 필요" : "부족", item.result, item.action]);
   const evidenceMapping = state.rows.flatMap((row) => {
     const qn = questionNumber(row);
     const record = draftRecord(qn);
@@ -1725,16 +2230,21 @@ function workbookPayload() {
     sheets: [
       {
         name: "전체 문항",
-        rows: [["Module", "Question", "Title", "Sector Flag", "Sector Applicable", "Status", "Expected Score", "Confidence", "Engine", "Score Notes", "Missing Conditions", "Evidence Mapping", "Draft"], ...allRows.map((row) => [row.module, row.question, row.title, row.sectorFlag, row.sectorApplicable, row.status, row.expectedScore, row.confidence, row.engine, row.scoreNotes, row.missingConditions, row.evidenceMapping, row.draft])],
+        rows: safeSpreadsheetRows([["Module", "Question", "Title", "Sector Flag", "Sector Applicable", "Status", "Expected Score", "Confidence", "Engine", "Score Notes", "Missing Conditions", "Evidence Mapping", "Draft"], ...allRows.map((row) => [row.module, row.question, row.title, row.sectorFlag, row.sectorApplicable, row.status, row.expectedScore, row.confidence, row.engine, row.scoreNotes, row.missingConditions, row.evidenceMapping, row.draft])]),
       },
-      { name: "감점 문항", rows: [["Module", "Question", "Title", "Level", "Status", "Expected Score", "Confidence", "Missing Conditions", "Improvement"], ...deductions] },
-      { name: "필수조건", rows: [["Condition", "Status", "Target Grade", "Matched Terms", "Evidence or Gap"], ...essentials] },
-      { name: "산업특수문항", rows: [["Module", "Question", "Title", "Applicability", "Reason"], ...sectorRows] },
-      { name: "배점요약", rows: [["Level", "Numerator", "Denominator", "Fulfillment"], ...["D", "A", "M", "L"].map((level) => {
+      { name: "감점 문항", rows: safeSpreadsheetRows([["Module", "Question", "Title", "Level", "Status", "Expected Score", "Confidence", "Missing Conditions", "Improvement"], ...deductions]) },
+      { name: "검토우선순위", rows: safeSpreadsheetRows([["Module", "Question", "Title", "Level", "Score Gap", "Confidence", "Missing Conditions", "First Action"], ...reviewRows]) },
+      { name: "최대득점경로", rows: safeSpreadsheetRows([["Module", "Question", "Title", "Level", "Max Points", "Atomic Conditions", "Key Terms", "Recommended Answer Pattern"], ...maxScorePathRows()]) },
+      { name: "필수조건", rows: safeSpreadsheetRows([["Condition", "Status", "Target Grade", "Matched Terms", "Evidence or Gap"], ...essentials]) },
+      { name: "산업특수문항", rows: safeSpreadsheetRows([["Module", "Question", "Title", "Applicability", "Reason"], ...sectorRows]) },
+      { name: "품질게이트", rows: safeSpreadsheetRows([["Check", "Status", "Current Value", "Action"], ...qualityRows, [], ["Evidence Check", "Status", "Current Value", "Action"], ...evidenceQualityRows]) },
+      { name: "배점요약", rows: safeSpreadsheetRows([["Level", "Numerator", "Denominator", "Fulfillment"], ...["D", "A", "M", "L"].map((level) => {
         const item = totals[level] || { numerator: 0, denominator: 0 };
         return [level, formatPointValue(item.numerator), formatPointValue(item.denominator), item.denominator ? `${Math.round((item.numerator / item.denominator) * 100)}%` : "0%"];
-      })] },
-      { name: "증빙매핑", rows: [["Module", "Question", "Level", "Condition", "Criteria Detail", "Status", "Evidence or Gap", "Engine"], ...evidenceMapping] },
+      })]) },
+      { name: "증빙매핑", rows: safeSpreadsheetRows([["Module", "Question", "Level", "Condition", "Criteria Detail", "Status", "Evidence or Gap", "Engine"], ...evidenceMapping]) },
+      { name: "API상태", rows: safeSpreadsheetRows([["Item", "Value"], ...apiHealthRows()]) },
+      { name: "방법론동기화", rows: safeSpreadsheetRows([["Module", "Question", "Title", "Status", "Confidence", "Detected Signals", "Allocation Diff", "Old chars", "New chars", "Condition Count", "Applied"], ...methodologySyncRows()]) },
     ],
   };
 }
@@ -1775,6 +2285,7 @@ function render() {
   if (state.activeView === "writer") renderWriter();
   if (state.activeView === "evaluation") renderEvaluation();
   if (state.activeView === "references") renderReferences();
+  if (state.activeView === "sync") renderSync();
   if (state.activeView === "evidence") renderEvidence();
   if (state.activeView === "export") renderExport();
 }
@@ -1805,13 +2316,14 @@ function exportJson() {
     drafts: state.drafts,
     evaluationRows: exportRows(),
     workbook: workbookPayload(),
+    methodologySync: methodologySyncReport(),
     evidenceCharacters: charCount(state.evidenceLibrary),
   };
   download("cdp-writer-export.json", JSON.stringify(payload, null, 2), "application/json;charset=utf-8");
 }
 
 function csvEscape(value) {
-  return `"${text(value).replaceAll('"', '""')}"`;
+  return `"${safeSpreadsheetValue(value).replaceAll('"', '""')}"`;
 }
 
 function exportCsv() {
@@ -1843,14 +2355,19 @@ async function exportXlsx() {
   URL.revokeObjectURL(url);
 }
 
-async function extractFiles(files) {
+async function extractFileTexts(files) {
   if (!files.length) return;
   const formData = new FormData();
   for (const file of files) formData.append("files", file);
   const response = await fetch(apiUrl("/api/extract"), { method: "POST", headers: apiHeaders(), body: formData });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   const payload = await response.json();
-  state.fileResults = payload.files || [];
+  return payload.files || [];
+}
+
+async function extractFiles(files) {
+  const results = await extractFileTexts(files);
+  state.fileResults = results || [];
   const extracted = state.fileResults.filter((file) => file.ok && file.text).map((file) => `[${file.filename}]\n${file.text}`);
   if (extracted.length) {
     state.evidenceLibrary = [state.evidenceLibrary, ...extracted].filter(Boolean).join("\n\n");
@@ -1993,6 +2510,57 @@ document.addEventListener("click", async (event) => {
     }
     return;
   }
+  if (target.id === "syncExtractButton") {
+    const files = [...(document.querySelector("#syncFileInput")?.files || [])];
+    state.methodologySync.sourceUrl = document.querySelector("#syncSourceUrl")?.value || state.methodologySync.sourceUrl;
+    if (!files.length) {
+      alert("CDP Portal에서 export한 PDF/XLSX 파일을 먼저 선택하세요.");
+      return;
+    }
+    target.disabled = true;
+    target.textContent = "방법론 분석 중...";
+    try {
+      const results = await extractFileTexts(files);
+      analyzeMethodologySync(results || []);
+    } catch (error) {
+      state.methodologySync.files = [{ filename: "methodology-upload", ok: false, characters: 0, error: error.message }];
+      state.methodologySync.changes = [];
+      state.methodologySync.status = "분석 실패";
+    }
+    renderSync();
+    return;
+  }
+  if (target.id === "syncApplyButton") {
+    if (!state.methodologySync.changes.length) {
+      alert("적용할 방법론 변경 후보가 없습니다.");
+      return;
+    }
+    if (confirm(`${state.methodologySync.changes.length}개 변경 후보를 현재 세션의 평가기준 overlay로 적용할까요? 원본 데이터셋 파일은 덮어쓰지 않습니다.`)) {
+      applyMethodologySyncChanges();
+      renderSync();
+    }
+    return;
+  }
+  if (target.id === "syncClearButton") {
+    if (confirm("방법론 동기화 결과와 현재 세션 overlay를 초기화할까요?")) {
+      clearMethodologyOverlay();
+      state.methodologySync = {
+        sourceUrl: "https://myportal.cdp.net/guidance?locale=en",
+        status: "대기",
+        files: [],
+        changes: [],
+        appliedAt: "",
+        appliedCount: 0,
+      };
+      persistWorkspace();
+      renderSync();
+    }
+    return;
+  }
+  if (target.id === "syncExportButton") {
+    download(`cdp-methodology-sync-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(methodologySyncReport(), null, 2), "application/json;charset=utf-8");
+    return;
+  }
   if (target.dataset.export === "csv") exportCsv();
   if (target.dataset.export === "json") exportJson();
   if (target.dataset.export === "xlsx") {
@@ -2025,11 +2593,16 @@ document.addEventListener("input", (event) => {
   }
   if (target.id === "apiBaseUrl") {
     state.apiBaseUrl = normalizeApiBaseUrl(target.value);
+    state.apiHealth = null;
     setApiStatus(state.apiBaseUrl ? "partial" : "partial", state.apiBaseUrl ? "API 설정됨" : "기본 API");
   }
   if (target.id === "apiToken") {
     state.apiToken = target.value;
+    state.apiHealth = null;
     setApiStatus("partial", "API 토큰 입력됨");
+  }
+  if (target.id === "syncSourceUrl") {
+    state.methodologySync.sourceUrl = target.value;
   }
   persistWorkspace();
 });
@@ -2071,10 +2644,11 @@ async function loadDataset(url) {
   state.referenceKey = dataset.references?.[0]?.key || "";
   state.activeView = location.hash.replace("#", "") || "dashboard";
   restoreWorkspace(url);
+  restoreMethodologyOverlay();
   if (!state.rows.some((row) => questionNumber(row) === state.selectedQuestion)) {
     state.selectedQuestion = state.rows[0] ? questionNumber(state.rows[0]) : "";
   }
-  if (!["dashboard", "writer", "evaluation", "references", "evidence", "export"].includes(state.activeView)) {
+  if (!["dashboard", "writer", "evaluation", "references", "sync", "evidence", "export"].includes(state.activeView)) {
     state.activeView = "dashboard";
   }
   syncApiInputs();

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>CDP 작성기 2026</title>
-    <link rel="stylesheet" href="./styles.css?v=api-link-v1" />
+    <link rel="stylesheet" href="./styles.css?v=pdca10-v1" />
   </head>
   <body>
     <header class="app-header">
@@ -43,6 +43,7 @@
         <button class="nav-button" type="button" data-view="writer">작성</button>
         <button class="nav-button" type="button" data-view="evaluation">평가</button>
         <button class="nav-button" type="button" data-view="references">자료</button>
+        <button class="nav-button" type="button" data-view="sync">방법론 동기화</button>
         <button class="nav-button" type="button" data-view="evidence">증빙</button>
         <button class="nav-button" type="button" data-view="export">내보내기</button>
       </nav>
@@ -248,6 +249,53 @@
       </section>
     </template>
 
+    <template id="syncTemplate">
+      <section class="stack">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">CDP Portal Export</p>
+              <h2>방법론 동기화 센터</h2>
+            </div>
+            <span class="status-badge status-partial" data-field="syncStatus">대기</span>
+          </div>
+          <p class="table-note">
+            CDP Portal에서 질문지, 작성안내, 평가방법론을 PDF 또는 Excel로 export한 뒤 업로드하세요.
+            변경 후보를 먼저 비교하고, 검토 후 승인 적용합니다.
+          </p>
+          <div class="form-grid">
+            <label class="field-label">
+              CDP Portal 기준 URL
+              <input id="syncSourceUrl" type="url" value="https://myportal.cdp.net/guidance?locale=en" />
+            </label>
+            <label class="field-label">
+              공식 export 파일
+              <input id="syncFileInput" type="file" multiple accept=".pdf,.xlsx,.docx,.pptx,.txt,.csv,.json,.md" />
+            </label>
+          </div>
+          <div class="button-row">
+            <button id="syncExtractButton" type="button" class="primary-button">방법론 파일 분석</button>
+            <button id="syncApplyButton" type="button" class="ghost-button">검토 후보 승인 적용</button>
+            <button id="syncExportButton" type="button" class="ghost-button">동기화 리포트 JSON</button>
+            <button id="syncClearButton" type="button" class="ghost-button">동기화 초기화</button>
+          </div>
+        </div>
+        <div class="metric-grid" data-field="syncSummary"></div>
+        <div class="panel">
+          <div class="section-head">
+            <h2>파일 추출 결과</h2>
+          </div>
+          <div class="file-results" data-field="syncFiles"></div>
+        </div>
+        <div class="panel">
+          <div class="section-head">
+            <h2>방법론 변경 후보</h2>
+          </div>
+          <div class="export-table" data-field="syncChanges"></div>
+        </div>
+      </section>
+    </template>
+
     <template id="exportTemplate">
       <section class="stack">
         <div class="panel">
@@ -267,6 +315,6 @@
       </section>
     </template>
 
-    <script src="./app.js?v=api-link-v1"></script>
+    <script src="./app.js?v=method-sync-v1"></script>
   </body>
 </html>

@@ -30,6 +30,7 @@ MAX_GENERATE_REQUEST_BYTES = 1 * 1024 * 1024
 MAX_EXPORT_REQUEST_BYTES = 20 * 1024 * 1024
 MAX_AI_INPUT_CHARS = 24_000
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
+API_VERSION = "2026.05.22-pdca10"
 DEFAULT_ALLOWED_ORIGINS = {
     "http://127.0.0.1:8780",
     "http://localhost:8780",
@@ -352,6 +353,11 @@ def xml_escape(value: Any) -> str:
     ).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
+def safe_spreadsheet_value(value: Any) -> str:
+    raw = "" if value is None else str(value)
+    return "'" + raw if raw.lstrip().startswith(("=", "+", "-", "@")) else raw
+
+
 def column_name(index: int) -> str:
     name = ""
     while index:
@@ -371,7 +377,7 @@ def worksheet_xml(rows: list[list[Any]]) -> str:
         cells: list[str] = []
         for c_idx, value in enumerate(row[:80], start=1):
             cell_ref = f"{column_name(c_idx)}{r_idx}"
-            cell_value = xml_escape(value)
+            cell_value = xml_escape(safe_spreadsheet_value(value))
             cells.append(f'<c r="{cell_ref}" t="inlineStr"><is><t xml:space="preserve">{cell_value}</t></is></c>')
         xml_rows.append(f'<row r="{r_idx}">{"".join(cells)}</row>')
     return (
@@ -557,9 +563,17 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json(200, {
                 "ok": True,
                 "name": "CDP Writer API",
+                "version": API_VERSION,
                 "features": ["extract", "generate", "export-xlsx"],
                 "tokenRequired": bool(os.environ.get("CDP_API_TOKEN", "").strip()),
                 "openaiConfigured": bool(os.environ.get("OPENAI_API_KEY", "").strip()),
+                "limits": {
+                    "maxFiles": MAX_FILES,
+                    "maxFileMB": MAX_FILE_BYTES // (1024 * 1024),
+                    "maxRequestMB": MAX_REQUEST_BYTES // (1024 * 1024),
+                    "maxExtractedChars": MAX_EXTRACTED_CHARS,
+                    "maxAiInputChars": MAX_AI_INPUT_CHARS,
+                },
             })
             return
         if self.path in {"/", ""}:
