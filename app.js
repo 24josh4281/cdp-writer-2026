@@ -1510,7 +1510,63 @@ function parseBenchmarkRows(source) {
     .map((line) => line.replace(/\s+/g, " ").trim())
     .filter(Boolean);
   const rows = [];
+  let tableHeader = null;
+  let currentFile = "";
+  let activeTableSheet = "";
+  const scoreNumber = (value) => {
+    const match = text(value).match(/-?\d+(?:\.\d+)?/);
+    return match ? match[0] : "";
+  };
+  const tableValues = (line) => line.replace(/^\[[^\]]+\]\s*/, "").split(/\s*\|\s*/).map((value) => value.trim());
+  const hasHeaderLabel = (values, label) => values.some((value) => value.replace(/\s+/g, "") === label);
+  const levelScoreText = (values, level) => {
+    if (!tableHeader) return "";
+    const score = scoreNumber(values[tableHeader[`${level}(점수)`]]);
+    const max = scoreNumber(values[tableHeader[`${level}(배점)`]]);
+    if (!score && !max) return "";
+    return max ? `${score || 0}/${max}` : score;
+  };
   for (const line of lines) {
+    const fileHeader = line.match(/^\[([^\]]+\.(?:xlsx|xlsm|csv|txt|json|md|pdf|docx|pptx))\]$/i);
+    if (fileHeader) {
+      currentFile = fileHeader[1];
+      tableHeader = null;
+      activeTableSheet = "";
+      continue;
+    }
+    const sheetMatch = line.match(/^\[XLSX\s+(.+?)\s+row\s+\d+\]/i);
+    const lineSheet = sheetMatch ? sheetMatch[1].trim() : activeTableSheet;
+    if (sheetMatch && activeTableSheet && lineSheet !== activeTableSheet) {
+      tableHeader = null;
+    }
+    const values = tableValues(line);
+    if (values.includes("Question Number") && hasHeaderLabel(values, "D(점수)") && hasHeaderLabel(values, "D(배점)")) {
+      activeTableSheet = lineSheet;
+      tableHeader = {};
+      values.forEach((value, index) => {
+        if (value && tableHeader[value] === undefined) tableHeader[value] = index;
+      });
+      continue;
+    }
+    if (tableHeader && (!sheetMatch || lineSheet === activeTableSheet)) {
+      const qn = values[tableHeader["Question Number"]];
+      if (qn && /^\d+(?:\.\d+){1,3}[a-z]?$/i.test(qn)) {
+        const levelScores = {};
+        for (const level of ["D", "A", "M", "L"]) {
+          const score = levelScoreText(values, level);
+          if (score) levelScores[level] = score;
+        }
+        rows.push({
+          question: qn,
+          levelScores,
+          scoreLike: "",
+          sourceLine: line,
+          sourceType: "preassessment-table",
+          sourceFile: currentFile,
+        });
+        continue;
+      }
+    }
     const qn = line.match(/\b\d+(?:\.\d+){1,3}[a-z]?\b/)?.[0];
     if (!qn) continue;
     const levelScores = {};
@@ -1520,14 +1576,44 @@ function parseBenchmarkRows(source) {
     }
     const scoreLike = line.match(/\b\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?\b/)?.[0] || "";
     if (Object.keys(levelScores).length || scoreLike) {
-      rows.push({ question: qn, levelScores, scoreLike, sourceLine: line });
+      rows.push({ question: qn, levelScores, scoreLike, sourceLine: line, sourceType: "text", sourceFile: currentFile });
     }
   }
   const byQuestion = new Map();
   for (const row of rows) {
-    if (!byQuestion.has(row.question)) byQuestion.set(row.question, row);
+    byQuestion.set(`${row.sourceFile || "benchmark"}::${row.question}`, row);
   }
   return [...byQuestion.values()];
+}
+
+function parseScoreMap(value) {
+  const map = {};
+  for (const level of ["D", "A", "M", "L"]) {
+    const match = text(value).match(new RegExp(`${level}\\s*:?\\s*(-?\\d+(?:\\.\\d+)?)(?:\\s*\\/\\s*(-?\\d+(?:\\.\\d+)?))?`, "i"));
+    if (!match) continue;
+    map[level] = {
+      earned: Number(match[1]),
+      max: match[2] === undefined ? null : Number(match[2]),
+    };
+  }
+  return map;
+}
+
+function scoreDiffSummary(benchmarkMap, autoMap) {
+  const scoreDiffs = [];
+  const denominatorDiffs = [];
+  for (const level of ["D", "A", "M", "L"]) {
+    const bench = benchmarkMap[level];
+    const auto = autoMap[level];
+    if (!bench || !auto) continue;
+    if (bench.max !== null && auto.max !== null && Math.abs(bench.max - auto.max) > 0.0001) {
+      denominatorDiffs.push(`${level} ${formatPointValue(bench.max)}→${formatPointValue(auto.max)}`);
+    }
+    if (Number.isFinite(bench.earned) && Number.isFinite(auto.earned) && Math.abs(bench.earned - auto.earned) > 0.0001) {
+      scoreDiffs.push(`${level} ${formatPointValue(bench.earned)}→${formatPointValue(auto.earned)}`);
+    }
+  }
+  return { scoreDiffs, denominatorDiffs };
 }
 
 function compareBenchmarkRows() {
@@ -1536,13 +1622,21 @@ function compareBenchmarkRows() {
   return parsed.map((bench) => {
     const auto = autoRows.find((row) => row.question === bench.question);
     const autoScore = auto?.expectedScore || "";
-    const match = Object.entries(bench.levelScores || {}).every(([level, score]) => autoScore.includes(`${level}:`) && autoScore.includes(String(score).split("/")[0]));
+    const benchmarkScore = Object.keys(bench.levelScores || {}).length ? Object.entries(bench.levelScores).map(([level, score]) => `${level}:${score}`).join("; ") : bench.scoreLike;
+    const benchmarkMap = parseScoreMap(benchmarkScore);
+    const autoMap = parseScoreMap(autoScore);
+    const { scoreDiffs, denominatorDiffs } = scoreDiffSummary(benchmarkMap, autoMap);
+    const result = !auto ? "자동평가 문항 없음" : denominatorDiffs.length ? "배점 차이" : scoreDiffs.length ? "점수 차이" : "일치 후보";
     return {
       question: bench.question,
       title: auto?.title || "",
-      benchmarkScore: Object.keys(bench.levelScores || {}).length ? Object.entries(bench.levelScores).map(([level, score]) => `${level}:${score}`).join("; ") : bench.scoreLike,
+      benchmarkScore,
       autoScore,
-      result: auto ? (match ? "일치 후보" : "차이 검토") : "자동평가 문항 없음",
+      result,
+      scoreDiff: scoreDiffs.join("; "),
+      denominatorDiff: denominatorDiffs.join("; "),
+      sourceType: bench.sourceType || "",
+      sourceFile: bench.sourceFile || "",
       sourceLine: bench.sourceLine,
     };
   });
@@ -2131,19 +2225,21 @@ function renderEssential() {
 function renderBenchmark() {
   const fragment = cloneTemplate("#benchmarkTemplate");
   const rows = compareBenchmarkRows();
-  const diffCount = rows.filter((row) => row.result === "차이 검토").length;
+  const diffCount = rows.filter((row) => row.result !== "일치 후보").length;
   fragment.querySelector('[data-field="benchmarkStatus"]').textContent = state.benchmark.comparedAt ? `${rows.length}개 비교 · ${diffCount}개 차이` : "대기";
   fragment.querySelector('[data-field="benchmarkTable"]').innerHTML = rows.length
     ? `
       <table class="table-like compact-table">
-        <thead><tr><th>문항</th><th>결과</th><th>정답지 점수</th><th>자동평가 점수</th><th>정답지 원문</th></tr></thead>
+        <thead><tr><th>문항</th><th>파일</th><th>결과</th><th>차이 유형</th><th>정답지 점수</th><th>자동평가 점수</th><th>정답지 원문</th></tr></thead>
         <tbody>
           ${rows
             .map(
               (row) => `
                 <tr>
                   <td><strong>${escapeHtml(row.question)}</strong><br />${escapeHtml(row.title)}</td>
+                  <td>${escapeHtml(row.sourceFile || "-")}</td>
                   <td><span class="status-badge ${row.result === "일치 후보" ? "status-pass" : "status-partial"}">${escapeHtml(row.result)}</span></td>
+                  <td>${escapeHtml([row.denominatorDiff ? `배점: ${row.denominatorDiff}` : "", row.scoreDiff ? `점수: ${row.scoreDiff}` : ""].filter(Boolean).join("\n") || "-")}</td>
                   <td>${escapeHtml(row.benchmarkScore || "-")}</td>
                   <td>${escapeHtml(row.autoScore || "-")}</td>
                   <td>${escapeHtml(row.sourceLine)}</td>
@@ -2626,7 +2722,7 @@ function workbookPayload() {
       { name: "증빙매핑", rows: safeSpreadsheetRows([["Module", "Question", "Level", "Condition", "Criteria Detail", "Status", "Evidence or Gap", "Engine"], ...evidenceMapping]) },
       { name: "API상태", rows: safeSpreadsheetRows([["Item", "Value"], ...apiHealthRows()]) },
       { name: "채점규칙DB", rows: safeSpreadsheetRows([["Module", "Question", "Title", "Level", "Max Points", "Has Route", "Best Row", "Row-level", "Partial", "Atomic Condition Count", "Atomic Conditions", "Synced"], ...scoringRuleRows()]) },
-      { name: "벤치마크비교", rows: safeSpreadsheetRows([["Question", "Title", "Result", "Benchmark Score", "Auto Score", "Source Line"], ...compareBenchmarkRows().map((row) => [row.question, row.title, row.result, row.benchmarkScore, row.autoScore, row.sourceLine])]) },
+      { name: "벤치마크비교", rows: safeSpreadsheetRows([["Question", "Title", "Source File", "Result", "Score Diff", "Denominator Diff", "Benchmark Score", "Auto Score", "Source Type", "Source Line"], ...compareBenchmarkRows().map((row) => [row.question, row.title, row.sourceFile, row.result, row.scoreDiff, row.denominatorDiff, row.benchmarkScore, row.autoScore, row.sourceType, row.sourceLine])]) },
       { name: "리뷰의견", rows: safeSpreadsheetRows([["Key", "Module", "Question", "Title", "Level", "Auto Status", "Expected Score", "Confidence", "Reviewer Decision", "Reviewer Note", "Updated At"], ...reviewerRows(500).map((row) => [row.key, row.module, row.question, row.title, row.level, row.status, row.expectedScore, row.confidence, row.decision, row.note, row.updatedAt])]) },
       { name: "방법론동기화", rows: safeSpreadsheetRows([["Module", "Question", "Title", "Status", "Decision", "Confidence", "Detected Signals", "Allocation Diff", "Old chars", "New chars", "Condition Count", "Applied"], ...methodologySyncRows()]) },
     ],

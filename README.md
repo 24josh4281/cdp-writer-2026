@@ -138,6 +138,7 @@ python scripts\benchmark_preassessment.py --path-file outputs\benchmark\benchmar
 - `Parsed Scores`: 문항별 D/A/M/L 점수와 배점
 - `Deduction Priority`: 감점이 큰 문항 우선순위
 - `Denominator Check`: 현재 데이터셋 배점과 기존 사전평가 배점의 차이
+- `Calibration Candidates`: 여러 기업에서 반복되는 배점 차이와 감점 갭을 모은 보정 우선순위
 
 2025 사전평가 파일을 2026 데이터셋과 비교하면 기준 연도 차이 때문에 배점 불일치가 발생할 수 있습니다. 이 경우 불일치 항목은 오류가 아니라 방법론 변경 또는 보정 후보로 검토해야 합니다.
 

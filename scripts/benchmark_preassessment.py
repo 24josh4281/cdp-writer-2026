@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -242,6 +243,68 @@ def workbook_summary(rows: list[BenchmarkRow], parse_statuses: list[dict[str, An
     return output
 
 
+def calibration_candidate_rows(rows: list[BenchmarkRow]) -> list[list[Any]]:
+    """Return repeated issues that are useful for scoring calibration review."""
+    output: list[list[Any]] = [[
+        "Type",
+        "Question",
+        "Companies",
+        "Company Count",
+        "Total Gap",
+        "Largest Gap Levels",
+        "Benchmark D/A/M/L",
+        "Dataset D/A/M/L",
+        "Suggested Review",
+    ]]
+
+    by_question: dict[str, list[BenchmarkRow]] = defaultdict(list)
+    for row in rows:
+        by_question[row.question].append(row)
+
+    candidates: list[tuple[int, float, list[Any]]] = []
+    for question, items in by_question.items():
+        companies = sorted({item.company for item in items})
+        mismatch_items = [item for item in items if item.denominator_match == "mismatch"]
+        gap_items = [item for item in items if item.total_gap >= 2]
+
+        if len({item.company for item in mismatch_items}) >= 2:
+            sample = mismatch_items[0]
+            benchmark_variants = sorted({f"{item.d_max}/{item.a_max}/{item.m_max}/{item.l_max}" for item in mismatch_items})
+            dataset_value = f"{sample.dataset_d_max}/{sample.dataset_a_max}/{sample.dataset_m_max}/{sample.dataset_l_max}"
+            row = [
+                "Repeated denominator mismatch",
+                question,
+                ", ".join(sorted({item.company for item in mismatch_items})),
+                len({item.company for item in mismatch_items}),
+                round(sum(item.total_gap for item in mismatch_items), 4),
+                "",
+                " | ".join(benchmark_variants),
+                dataset_value,
+                "Check whether this is a 2025→2026 methodology change before changing 2026 scoring.",
+            ]
+            candidates.append((len({item.company for item in mismatch_items}), sum(item.total_gap for item in mismatch_items), row))
+
+        if len({item.company for item in gap_items}) >= 2:
+            level_counts = Counter(item.largest_gap_level or "none" for item in gap_items)
+            score_variants = sorted({f"{item.company}:D {item.d_score}/{item.d_max}, A {item.a_score}/{item.a_max}, M {item.m_score}/{item.m_max}, L {item.l_score}/{item.l_max}" for item in gap_items})
+            row = [
+                "Repeated deduction gap",
+                question,
+                ", ".join(sorted({item.company for item in gap_items})),
+                len({item.company for item in gap_items}),
+                round(sum(item.total_gap for item in gap_items), 4),
+                ", ".join(f"{level}:{count}" for level, count in level_counts.most_common()),
+                " | ".join(score_variants),
+                "",
+                "Use this as priority when improving evidence mapping and response-improvement guidance.",
+            ]
+            candidates.append((len({item.company for item in gap_items}), sum(item.total_gap for item in gap_items), row))
+
+    candidates.sort(key=lambda item: (-item[0], -item[1], str(item[2][1])))
+    output.extend(item[2] for item in candidates)
+    return output
+
+
 def row_values(row: BenchmarkRow) -> list[Any]:
     data = asdict(row)
     return [data[key] for key in data]
@@ -300,6 +363,10 @@ def write_xlsx(rows: list[BenchmarkRow], statuses: list[dict[str, Any]], output_
                 row.row_number,
             ]
         )
+
+    calibration = wb.create_sheet("Calibration Candidates")
+    for values in calibration_candidate_rows(rows):
+        calibration.append(values)
 
     fill = PatternFill("solid", fgColor="EAF2F8")
     for ws in wb.worksheets:
