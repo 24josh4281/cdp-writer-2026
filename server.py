@@ -117,7 +117,13 @@ def extract_docx(data: bytes) -> str:
             and name.endswith(".xml")
             and any(part in name for part in ("document", "header", "footer", "footnotes", "endnotes"))
         ]
-        return "\n".join(xml_text(zf.read(name)) for name in sorted(names)).strip()
+        chunks: list[str] = []
+        for name in sorted(names):
+            extracted = xml_text(zf.read(name))
+            if extracted:
+                location = "document" if "document" in name else Path(name).stem
+                chunks.append(f"[DOCX {location}] {extracted}")
+        return "\n".join(chunks).strip()
 
 
 def extract_pptx(data: bytes) -> str:
@@ -132,7 +138,17 @@ def extract_pptx(data: bytes) -> str:
             match = re.search(r"(\d+)\.xml$", name)
             return (int(match.group(1)) if match else 0, name)
 
-        return "\n\n".join(xml_text(zf.read(name)) for name in sorted(names, key=slide_order)).strip()
+        chunks: list[str] = []
+        for name in sorted(names, key=slide_order):
+            extracted = xml_text(zf.read(name))
+            if not extracted:
+                continue
+            match = re.search(r"(\d+)\.xml$", name)
+            label = f"Slide {match.group(1)}" if match else Path(name).stem
+            if name.startswith("ppt/notesSlides/"):
+                label = f"Notes {match.group(1)}" if match else label
+            chunks.append(f"[PPTX {label}] {extracted}")
+        return "\n\n".join(chunks).strip()
 
 
 def extract_xlsx_with_openpyxl(data: bytes) -> str:
@@ -141,11 +157,10 @@ def extract_xlsx_with_openpyxl(data: bytes) -> str:
     wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
     chunks: list[str] = []
     for ws in wb.worksheets:
-        chunks.append(f"[Sheet] {ws.title}")
-        for row in ws.iter_rows(values_only=True):
+        for row_index, row in enumerate(ws.iter_rows(values_only=True), start=1):
             values = [str(value).strip() for value in row if value not in (None, "")]
             if values:
-                chunks.append(" | ".join(values))
+                chunks.append(f"[XLSX {ws.title} row {row_index}] {' | '.join(values)}")
     return "\n".join(chunks).strip()
 
 
@@ -160,7 +175,6 @@ def extract_xlsx_fallback(data: bytes) -> str:
 
         chunks: list[str] = []
         for name in sorted(n for n in zf.namelist() if n.startswith("xl/worksheets/") and n.endswith(".xml")):
-            chunks.append(f"[Sheet XML] {Path(name).stem}")
             root = ET.fromstring(zf.read(name))
             row_values: list[str] = []
             for cell in root.iter():
@@ -175,7 +189,7 @@ def extract_xlsx_fallback(data: bytes) -> str:
                     value = shared[int(value)]
                 row_values.append(value)
             if row_values:
-                chunks.append(" | ".join(row_values))
+                chunks.append(f"[XLSX {Path(name).stem}] {' | '.join(row_values)}")
     return "\n".join(chunks).strip()
 
 
@@ -197,7 +211,12 @@ def extract_pdf(data: bytes) -> str:
     reader = PdfReader(io.BytesIO(data))
     if len(reader.pages) > MAX_PDF_PAGES:
         raise ValueError(f"PDF 페이지 수가 너무 많습니다. 최대 {MAX_PDF_PAGES}쪽까지 추출합니다.")
-    return "\n".join((page.extract_text() or "").strip() for page in reader.pages).strip()
+    chunks: list[str] = []
+    for page_index, page in enumerate(reader.pages, start=1):
+        extracted = (page.extract_text() or "").strip()
+        if extracted:
+            chunks.append(f"[PDF page {page_index}] {extracted}")
+    return "\n".join(chunks).strip()
 
 
 def extract_file_text(filename: str, data: bytes) -> dict[str, Any]:
@@ -272,6 +291,7 @@ def generate_openai_draft(payload: dict[str, Any]) -> dict[str, Any]:
     sector = clamp_chars(payload.get("sector") or "", 100)
     keywords = clamp_chars(payload.get("keywords") or "", 2000)
     evidence = clamp_chars(payload.get("evidence") or "")
+    quality_mode = payload.get("qualityMode", True) is not False
     try:
         char_limit = int(payload.get("charLimit") or 2400)
     except (TypeError, ValueError):
@@ -287,6 +307,11 @@ def generate_openai_draft(payload: dict[str, Any]) -> dict[str, Any]:
         "Prioritize CDP scoring coverage across Disclosure, Awareness, Management, and Leadership criteria. "
         "Keep the response within the requested character limit."
     )
+    if quality_mode:
+        instructions += (
+            " Mark unsupported claims, numbers, targets, assurance statements, and governance claims with "
+            "the Korean placeholder [증빙 필요] instead of presenting them as confirmed facts."
+        )
     user_input = {
         "task": "Create a CDP answer draft that maximizes scoring coverage while remaining evidence-based.",
         "company": company,
@@ -306,6 +331,7 @@ def generate_openai_draft(payload: dict[str, Any]) -> dict[str, Any]:
             "evidence_checklist": clamp_chars(question.get("evidenceChecklist"), 3000),
         },
         "evidence": evidence,
+        "quality_mode": quality_mode,
         "output_requirements": [
             "한국어 본문으로 작성",
             "문항에서 요구하는 선택값, 정량값, 설명, 증빙 위치를 빠뜨리지 않기",
@@ -435,7 +461,7 @@ def create_xlsx(payload: dict[str, Any]) -> bytes:
         raise ValueError("No sheets supplied")
     normalized: list[tuple[str, list[list[Any]]]] = []
     used_names: set[str] = set()
-    for index, sheet in enumerate(sheets[:12], start=1):
+    for index, sheet in enumerate(sheets[:20], start=1):
         if not isinstance(sheet, dict):
             continue
         name = safe_sheet_name(sheet.get("name"), f"Sheet{index}")

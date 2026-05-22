@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>CDP 작성기 2026</title>
-    <link rel="stylesheet" href="./styles.css?v=pdca10-v1" />
+    <link rel="stylesheet" href="./styles.css?v=evaluation-suite-v1" />
   </head>
   <body>
     <header class="app-header">
@@ -40,8 +40,12 @@
     <main class="app-layout">
       <nav class="side-nav" aria-label="주요 메뉴">
         <button class="nav-button is-active" type="button" data-view="dashboard">대시보드</button>
+        <button class="nav-button" type="button" data-view="projects">프로젝트</button>
         <button class="nav-button" type="button" data-view="writer">작성</button>
         <button class="nav-button" type="button" data-view="evaluation">평가</button>
+        <button class="nav-button" type="button" data-view="essential">필수조건</button>
+        <button class="nav-button" type="button" data-view="benchmark">벤치마크</button>
+        <button class="nav-button" type="button" data-view="review">리뷰</button>
         <button class="nav-button" type="button" data-view="references">자료</button>
         <button class="nav-button" type="button" data-view="sync">방법론 동기화</button>
         <button class="nav-button" type="button" data-view="evidence">증빙</button>
@@ -81,6 +85,40 @@
             <div data-field="deductionPreview"></div>
           </div>
         </section>
+      </section>
+    </template>
+
+    <template id="projectsTemplate">
+      <section class="stack">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Company Workspaces</p>
+              <h2>기업별 프로젝트 관리</h2>
+            </div>
+            <span class="status-badge status-partial" data-field="activeProjectBadge">현재 세션</span>
+          </div>
+          <div class="form-grid">
+            <label class="field-label">
+              프로젝트명
+              <input id="projectNameInput" type="text" placeholder="예: OCI 2026 CC" />
+            </label>
+            <label class="field-label">
+              회사명
+              <input id="projectCompanyInput" type="text" />
+            </label>
+          </div>
+          <div class="button-row">
+            <button id="saveProjectButton" type="button" class="primary-button">현재 작업 저장</button>
+            <button id="newProjectButton" type="button" class="ghost-button">새 프로젝트 시작</button>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="section-head">
+            <h2>저장된 기업 프로젝트</h2>
+          </div>
+          <div class="export-table" data-field="projectTable"></div>
+        </div>
       </section>
     </template>
 
@@ -145,6 +183,10 @@
                 증빙자료 원문
                 <textarea id="evidenceText" rows="11" placeholder="보고서, 검증성명서, 내부 증빙자료에서 관련 문단을 붙여넣으세요."></textarea>
               </label>
+              <label class="field-label inline-field">
+                <input id="gptQualityMode" type="checkbox" />
+                증빙 없는 수치/사실은 [증빙 필요]로 표시
+              </label>
               <div class="button-row">
                 <button type="button" class="primary-button" id="generateButton">답변 초안 생성</button>
                 <button type="button" class="ghost-button" id="generateGptButton" title="로컬 서버에서 OPENAI_API_KEY 설정 시 동작합니다.">GPT 답변 생성</button>
@@ -204,6 +246,61 @@
             </div>
           </div>
           <div class="deduction-table" data-field="deductionTable"></div>
+        </div>
+      </section>
+    </template>
+
+    <template id="essentialTemplate">
+      <section class="stack">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Essential Criteria</p>
+              <h2>필수조건 전용 점검</h2>
+            </div>
+          </div>
+          <div data-field="essentialDetail"></div>
+        </div>
+      </section>
+    </template>
+
+    <template id="benchmarkTemplate">
+      <section class="stack">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Benchmark QA</p>
+              <h2>사전평가 정답지 비교</h2>
+            </div>
+            <span class="status-badge status-partial" data-field="benchmarkStatus">대기</span>
+          </div>
+          <p class="table-note">기존 사전평가 XLSX/CSV를 업로드하면 문항번호와 D/A/M/L 점수 표현을 찾아 자동평가 결과와 비교합니다.</p>
+          <div class="button-row">
+            <input id="benchmarkFileInput" type="file" multiple accept=".xlsx,.csv,.txt,.json,.md" />
+            <button id="benchmarkExtractButton" type="button" class="primary-button">정답지 비교</button>
+            <button id="benchmarkClearButton" type="button" class="ghost-button">초기화</button>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="section-head">
+            <h2>비교 결과</h2>
+          </div>
+          <div class="export-table" data-field="benchmarkTable"></div>
+        </div>
+      </section>
+    </template>
+
+    <template id="reviewTemplate">
+      <section class="stack">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Reviewer Mode</p>
+              <h2>사람 검토 의견</h2>
+            </div>
+          </div>
+          <p class="table-note">자동평가 결과에 대해 인정, 수정, 보류 판단과 메모를 남깁니다. 리뷰 의견은 XLSX export에 포함됩니다.</p>
+          <div class="export-table" data-field="reviewTable"></div>
         </div>
       </section>
     </template>
@@ -315,6 +412,6 @@
       </section>
     </template>
 
-    <script src="./app.js?v=method-sync-v1"></script>
+    <script src="./app.js?v=evaluation-suite-v1"></script>
   </body>
 </html>

@@ -42,6 +42,15 @@ const state = {
   apiBaseUrl: defaultApiBaseUrl(),
   apiToken: "",
   apiHealth: null,
+  activeProjectId: "",
+  projects: [],
+  benchmark: {
+    files: [],
+    rows: [],
+    comparedAt: "",
+  },
+  reviewerNotes: {},
+  gptQualityMode: true,
   methodologySync: {
     sourceUrl: "https://myportal.cdp.net/guidance?locale=en",
     status: "대기",
@@ -208,6 +217,11 @@ function workspaceSnapshot() {
     guideTab: state.guideTab,
     referenceKey: state.referenceKey,
     apiBaseUrl: state.apiBaseUrl,
+    activeProjectId: state.activeProjectId,
+    projects: state.projects,
+    benchmark: state.benchmark,
+    reviewerNotes: state.reviewerNotes,
+    gptQualityMode: state.gptQualityMode,
     methodologySync: {
       sourceUrl: state.methodologySync.sourceUrl,
       status: state.methodologySync.status,
@@ -249,6 +263,11 @@ function restoreWorkspace(datasetUrl) {
       guideTab: saved.guideTab || state.guideTab,
       referenceKey: saved.referenceKey || state.referenceKey,
       apiBaseUrl: saved.apiBaseUrl || state.apiBaseUrl,
+      activeProjectId: saved.activeProjectId || "",
+      projects: Array.isArray(saved.projects) ? saved.projects : [],
+      benchmark: saved.benchmark || state.benchmark,
+      reviewerNotes: saved.reviewerNotes || {},
+      gptQualityMode: saved.gptQualityMode !== false,
       methodologySync: saved.methodologySync || state.methodologySync,
     });
   } catch {
@@ -269,6 +288,11 @@ function clearWorkspaceStorage() {
   state.selectedQuestion = state.rows[0] ? questionNumber(state.rows[0]) : "";
   state.apiToken = "";
   state.apiHealth = null;
+  state.activeProjectId = "";
+  state.projects = [];
+  state.benchmark = { files: [], rows: [], comparedAt: "" };
+  state.reviewerNotes = {};
+  state.gptQualityMode = true;
   state.methodologySync = {
     sourceUrl: "https://myportal.cdp.net/guidance?locale=en",
     status: "대기",
@@ -1033,7 +1057,7 @@ function composeDraft(row, override = {}) {
     : `${company}은 해당 문항에서 요구하는 선택값, 정량값, 설명 및 증빙 위치를 같은 문항 안에서 확인 가능하도록 관리합니다.`;
   const governance = `${company}은 ${keywordSentence}를 핵심 관리항목으로 설정하고, 산정·검토·승인 절차와 책임조직을 명확히 운영합니다. 해당 결과는 기후 전략, 리스크 관리, 목표 이행 및 외부 공시에 반영됩니다.`;
   const proof = `관련 증빙은 ${row.evidenceChecklist || row.evidence_checklist || "내부 정책, 산정 파일, 승인자료, 검증자료"}에서 확인할 수 있으며, 제출 전 증빙명과 페이지를 함께 기재합니다.`;
-  return clampText([base, evidencePart, governance, proof].filter(Boolean).join("\n\n"), limit);
+  return guardedDraftText(clampText([base, evidencePart, governance, proof].filter(Boolean).join("\n\n"), limit), row, evidence);
 }
 
 function questionPayloadForAi(row) {
@@ -1062,6 +1086,7 @@ async function generateGptDraft(row) {
     charLimit: state.charLimit,
     keywords: state.keywords,
     evidence: state.evidenceInput || state.evidenceLibrary,
+    qualityMode: state.gptQualityMode,
     question: questionPayloadForAi(row),
   };
   const response = await fetch(apiUrl("/api/generate"), {
@@ -1073,7 +1098,7 @@ async function generateGptDraft(row) {
   if (!response.ok || !result.ok) {
     throw new Error(result.error || `HTTP ${response.status}`);
   }
-  return result.draft || "";
+  return guardedDraftText(result.draft || "", row, state.evidenceInput || state.evidenceLibrary);
 }
 
 function saveDraft(qn, draft, options = {}) {
@@ -1367,6 +1392,211 @@ function renderReviewPriorityPanel() {
       }
     </div>
   `;
+}
+
+function scoringRuleForRow(row) {
+  const source = rowScoringTextEn(row);
+  const sections = criteriaSections(source);
+  return {
+    module: moduleId(row),
+    question: questionNumber(row),
+    title: questionTitle(row),
+    sectorFlag: row.sectorFlag || row.sector_flag || "",
+    sectorApplicable: !isSectorSpecificRow(row) || isSelectedSectorRow(row),
+    synced: Boolean(row.syncScoringText),
+    levels: sections.map((section) => {
+      const atoms = atomizeCriteria(section.criteria);
+      const route = sectionRouteInfo(section, atoms.map((atom) => ({ route: atom.route || "" })));
+      return {
+        level: section.level,
+        name: section.name,
+        maxPoints: sectionMaxPoints(row, section),
+        route: route.routes.join(", "),
+        hasRoute: route.hasRoute,
+        bestRow: route.bestRow,
+        rowLevel: route.rowLevel,
+        partial: route.partial,
+        atomCount: atoms.length,
+        atoms,
+      };
+    }),
+  };
+}
+
+function scoringRuleRows(limit = state.rows.length) {
+  return applicableEvaluationRows()
+    .slice(0, limit)
+    .flatMap((row) => {
+      const rule = scoringRuleForRow(row);
+      return rule.levels.map((level) => [
+        rule.module,
+        rule.question,
+        rule.title,
+        level.level,
+        formatPointValue(level.maxPoints),
+        level.hasRoute ? "Y" : "N",
+        level.bestRow ? "Y" : "N",
+        level.rowLevel ? "Y" : "N",
+        level.partial ? "Y" : "N",
+        level.atomCount,
+        level.atoms.map((atom) => `${atom.label}: ${atom.detail}`).join("\n"),
+        rule.synced ? "Y" : "N",
+      ]);
+    });
+}
+
+function currentProjectSnapshot() {
+  return {
+    company: state.company,
+    sector: state.sector,
+    charLimit: state.charLimit,
+    keywords: state.keywords,
+    evidenceInput: state.evidenceInput,
+    evidenceLibrary: state.evidenceLibrary,
+    drafts: state.drafts,
+    fileResults: state.fileResults,
+    benchmark: state.benchmark,
+    reviewerNotes: state.reviewerNotes,
+    savedAt: new Date().toISOString(),
+  };
+}
+
+function saveProject(name) {
+  const projectName = text(name || state.company || "CDP Project").trim() || "CDP Project";
+  const id = state.activeProjectId || `project-${Date.now()}`;
+  const existing = state.projects.find((project) => project.id === id);
+  const project = { id, name: projectName, ...currentProjectSnapshot() };
+  if (existing) Object.assign(existing, project);
+  else state.projects.push(project);
+  state.activeProjectId = id;
+  persistWorkspace();
+}
+
+function loadProject(id) {
+  const project = state.projects.find((item) => item.id === id);
+  if (!project) return;
+  Object.assign(state, {
+    activeProjectId: project.id,
+    company: project.company || project.name || state.company,
+    sector: project.sector || state.sector,
+    charLimit: Number(project.charLimit || state.charLimit || 2400),
+    keywords: project.keywords || "",
+    evidenceInput: project.evidenceInput || "",
+    evidenceLibrary: project.evidenceLibrary || "",
+    drafts: project.drafts || {},
+    fileResults: project.fileResults || [],
+    benchmark: project.benchmark || { files: [], rows: [], comparedAt: "" },
+    reviewerNotes: project.reviewerNotes || {},
+  });
+  persistWorkspace();
+}
+
+function deleteProject(id) {
+  state.projects = state.projects.filter((project) => project.id !== id);
+  if (state.activeProjectId === id) state.activeProjectId = "";
+  persistWorkspace();
+}
+
+function benchmarkText(files = state.benchmark.files) {
+  return (files || [])
+    .filter((file) => file.ok && file.text)
+    .map((file) => `[${file.filename}]\n${file.text}`)
+    .join("\n\n");
+}
+
+function parseBenchmarkRows(source) {
+  const lines = text(source)
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  const rows = [];
+  for (const line of lines) {
+    const qn = line.match(/\b\d+(?:\.\d+){1,3}[a-z]?\b/)?.[0];
+    if (!qn) continue;
+    const levelScores = {};
+    for (const level of ["D", "A", "M", "L"]) {
+      const match = line.match(new RegExp(`${level}\\s*[:=]?\\s*(\\d+(?:\\.\\d+)?)(?:\\s*/\\s*(\\d+(?:\\.\\d+)?))?`, "i"));
+      if (match) levelScores[level] = match[2] ? `${match[1]}/${match[2]}` : match[1];
+    }
+    const scoreLike = line.match(/\b\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?\b/)?.[0] || "";
+    if (Object.keys(levelScores).length || scoreLike) {
+      rows.push({ question: qn, levelScores, scoreLike, sourceLine: line });
+    }
+  }
+  const byQuestion = new Map();
+  for (const row of rows) {
+    if (!byQuestion.has(row.question)) byQuestion.set(row.question, row);
+  }
+  return [...byQuestion.values()];
+}
+
+function compareBenchmarkRows() {
+  const parsed = parseBenchmarkRows(benchmarkText());
+  const autoRows = exportRows();
+  return parsed.map((bench) => {
+    const auto = autoRows.find((row) => row.question === bench.question);
+    const autoScore = auto?.expectedScore || "";
+    const match = Object.entries(bench.levelScores || {}).every(([level, score]) => autoScore.includes(`${level}:`) && autoScore.includes(String(score).split("/")[0]));
+    return {
+      question: bench.question,
+      title: auto?.title || "",
+      benchmarkScore: Object.keys(bench.levelScores || {}).length ? Object.entries(bench.levelScores).map(([level, score]) => `${level}:${score}`).join("; ") : bench.scoreLike,
+      autoScore,
+      result: auto ? (match ? "일치 후보" : "차이 검토") : "자동평가 문항 없음",
+      sourceLine: bench.sourceLine,
+    };
+  });
+}
+
+function reviewerKey(question, level = "Q") {
+  return `${question}::${level}`;
+}
+
+function reviewerRows(limit = 200) {
+  return deductionRows("all")
+    .slice(0, limit)
+    .map(({ row, qn, item }) => {
+      const key = reviewerKey(qn, item.level);
+      const note = state.reviewerNotes[key] || {};
+      return {
+        key,
+        module: moduleId(row),
+        question: qn,
+        title: questionTitle(row),
+        level: item.level,
+        status: item.status,
+        expectedScore: `${formatPointValue(item.earnedPoints)}/${formatPointValue(item.maxPoints)}`,
+        confidence: item.confidence.label,
+        decision: note.decision || "pending",
+        note: note.note || "",
+        updatedAt: note.updatedAt || "",
+      };
+    });
+}
+
+function setReviewerNote(key, patch) {
+  state.reviewerNotes[key] = {
+    ...(state.reviewerNotes[key] || {}),
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  };
+  persistWorkspace();
+}
+
+function guardedDraftText(draft, row, evidence) {
+  if (!state.gptQualityMode) return draft;
+  const evidenceChars = charCount(evidence);
+  const checks = [
+    { label: "정량 수치", pattern: /\d+(?:\.\d+)?\s*(?:tCO2e|톤|MWh|%|원|KRW|USD|년|year)/i },
+    { label: "검증/보증", pattern: /검증|보증|verification|assurance/i },
+    { label: "목표/전환계획", pattern: /목표|전환계획|target|transition/i },
+  ];
+  const missing = checks
+    .filter((check) => check.pattern.test(draft) && !check.pattern.test(evidence))
+    .map((check) => `[증빙 필요: ${check.label}]`);
+  if (!missing.length && evidenceChars >= 120) return draft;
+  const locationHint = evidenceChars ? "증빙 위치(파일명/페이지/시트/행)를 함께 확인하세요." : "증빙 원문이 없어 사실·수치 확정이 필요합니다.";
+  return clampText([draft, ...missing, `[검토 필요] ${locationHint}`].join("\n\n"), state.charLimit || 2400);
 }
 
 function cloneTemplate(id) {
@@ -1677,6 +1907,7 @@ function renderWriter() {
   fragment.querySelector("#charLimit").value = state.charLimit;
   fragment.querySelector("#keywords").value = state.keywords;
   fragment.querySelector("#evidenceText").value = state.evidenceInput || state.evidenceLibrary;
+  fragment.querySelector("#gptQualityMode").checked = state.gptQualityMode !== false;
   const draft = record?.draft || "";
   fragment.querySelector("#draftText").value = draft;
   fragment.querySelector('[data-field="charCounter"]').textContent = `${charCount(draft)}자 / ${state.charLimit}자`;
@@ -1827,6 +2058,142 @@ function renderEvaluation() {
     renderSectorPanel(),
     renderDeductionList(deductionRows()),
   ].join("");
+  app.replaceChildren(fragment);
+}
+
+function renderProjects() {
+  const fragment = cloneTemplate("#projectsTemplate");
+  const active = state.projects.find((project) => project.id === state.activeProjectId);
+  fragment.querySelector("#projectNameInput").value = active?.name || `${state.company || "기업"} CDP`;
+  fragment.querySelector("#projectCompanyInput").value = state.company;
+  fragment.querySelector('[data-field="activeProjectBadge"]').textContent = active ? `현재: ${active.name}` : "현재 세션";
+  fragment.querySelector('[data-field="projectTable"]').innerHTML = state.projects.length
+    ? `
+      <table class="table-like compact-table">
+        <thead><tr><th>프로젝트</th><th>회사</th><th>섹터</th><th>초안</th><th>저장일</th><th>작업</th></tr></thead>
+        <tbody>
+          ${state.projects
+            .map(
+              (project) => `
+                <tr>
+                  <td><strong>${escapeHtml(project.name)}</strong>${project.id === state.activeProjectId ? `<div class="condition-terms">현재 열림</div>` : ""}</td>
+                  <td>${escapeHtml(project.company || "-")}</td>
+                  <td>${escapeHtml(sectorDisplayValue(project.sector || "GEN"))}</td>
+                  <td>${Object.values(project.drafts || {}).filter((item) => item.draft).length}개</td>
+                  <td>${escapeHtml(project.savedAt || "-")}</td>
+                  <td>
+                    <button type="button" class="ghost-button" data-project-load="${escapeHtml(project.id)}">불러오기</button>
+                    <button type="button" class="ghost-button" data-project-delete="${escapeHtml(project.id)}">삭제</button>
+                  </td>
+                </tr>
+              `,
+            )
+            .join("")}
+        </tbody>
+      </table>
+    `
+    : `<div class="criteria-text">저장된 기업 프로젝트가 없습니다. 현재 작업을 저장하면 기업별로 초안, 증빙, 리뷰, 벤치마크를 따로 관리할 수 있습니다.</div>`;
+  app.replaceChildren(fragment);
+}
+
+function renderEssential() {
+  const fragment = cloneTemplate("#essentialTemplate");
+  const rows = evaluateEssentialCriteria();
+  const riskRows = rows.filter((row) => row.statusCode !== "pass");
+  fragment.querySelector('[data-field="essentialDetail"]').innerHTML = `
+    <div class="metric-grid">
+      <div class="metric-card"><span>전체 필수조건</span><strong>${rows.length}</strong></div>
+      <div class="metric-card"><span>검토 필요</span><strong>${riskRows.length}</strong></div>
+      <div class="metric-card"><span>대상 등급</span><strong>A/A-</strong></div>
+    </div>
+    <table class="table-like">
+      <thead><tr><th>필수조건</th><th>상태</th><th>대상 등급</th><th>매칭 근거</th><th>보완 조치</th></tr></thead>
+      <tbody>
+        ${rows
+          .map(
+            (row) => `
+              <tr>
+                <td><strong>${escapeHtml(row.label)}</strong></td>
+                <td><span class="status-badge ${statusClass(row.statusCode)}">${escapeHtml(row.status)}</span></td>
+                <td>${escapeHtml(row.levels.join(", "))}</td>
+                <td>${escapeHtml(row.matchedTerms.join(", ") || row.evidence)}</td>
+                <td>${escapeHtml(row.statusCode === "pass" ? "현재 증빙으로 충족 가능성이 있습니다." : row.evidence)}</td>
+              </tr>
+            `,
+          )
+          .join("")}
+      </tbody>
+    </table>
+  `;
+  app.replaceChildren(fragment);
+}
+
+function renderBenchmark() {
+  const fragment = cloneTemplate("#benchmarkTemplate");
+  const rows = compareBenchmarkRows();
+  const diffCount = rows.filter((row) => row.result === "차이 검토").length;
+  fragment.querySelector('[data-field="benchmarkStatus"]').textContent = state.benchmark.comparedAt ? `${rows.length}개 비교 · ${diffCount}개 차이` : "대기";
+  fragment.querySelector('[data-field="benchmarkTable"]').innerHTML = rows.length
+    ? `
+      <table class="table-like compact-table">
+        <thead><tr><th>문항</th><th>결과</th><th>정답지 점수</th><th>자동평가 점수</th><th>정답지 원문</th></tr></thead>
+        <tbody>
+          ${rows
+            .map(
+              (row) => `
+                <tr>
+                  <td><strong>${escapeHtml(row.question)}</strong><br />${escapeHtml(row.title)}</td>
+                  <td><span class="status-badge ${row.result === "일치 후보" ? "status-pass" : "status-partial"}">${escapeHtml(row.result)}</span></td>
+                  <td>${escapeHtml(row.benchmarkScore || "-")}</td>
+                  <td>${escapeHtml(row.autoScore || "-")}</td>
+                  <td>${escapeHtml(row.sourceLine)}</td>
+                </tr>
+              `,
+            )
+            .join("")}
+        </tbody>
+      </table>
+    `
+    : `<div class="criteria-text">아직 비교된 정답지가 없습니다. 기존 사전평가 XLSX/CSV를 업로드해 비교하세요.</div>`;
+  app.replaceChildren(fragment);
+}
+
+function renderReview() {
+  const fragment = cloneTemplate("#reviewTemplate");
+  const rows = reviewerRows();
+  fragment.querySelector('[data-field="reviewTable"]').innerHTML = rows.length
+    ? `
+      <table class="table-like compact-table">
+        <thead><tr><th>문항</th><th>자동평가</th><th>리뷰 판단</th><th>리뷰 메모</th><th>수정일</th></tr></thead>
+        <tbody>
+          ${rows
+            .map(
+              (row) => `
+                <tr>
+                  <td><strong>${escapeHtml(row.question)}</strong> · ${escapeHtml(row.level)}<br />${escapeHtml(row.title)}</td>
+                  <td>${escapeHtml(row.status)}<br />${escapeHtml(row.expectedScore)} · ${escapeHtml(row.confidence)}</td>
+                  <td>
+                    <select data-review-decision="${escapeHtml(row.key)}">
+                      ${[
+                        ["pending", "보류"],
+                        ["accepted", "인정"],
+                        ["revised", "수정 필요"],
+                        ["excluded", "제외"],
+                      ]
+                        .map(([value, label]) => `<option value="${value}" ${row.decision === value ? "selected" : ""}>${label}</option>`)
+                        .join("")}
+                    </select>
+                  </td>
+                  <td><textarea rows="2" data-review-note="${escapeHtml(row.key)}">${escapeHtml(row.note)}</textarea></td>
+                  <td>${escapeHtml(row.updatedAt || "-")}</td>
+                </tr>
+              `,
+            )
+            .join("")}
+        </tbody>
+      </table>
+    `
+    : `<div class="criteria-text">검토할 감점 후보가 없습니다. 평가 화면에서 전체 문항 초안을 생성하거나 실제 응답을 입력하세요.</div>`;
   app.replaceChildren(fragment);
 }
 
@@ -1984,6 +2351,7 @@ function methodologyChangeRows(source) {
       oldAtomCount,
       newAtomCount,
       segment,
+      decision: "pending",
       applied: false,
     });
   }
@@ -2023,7 +2391,7 @@ function restoreMethodologyOverlay() {
 }
 
 function applyMethodologySyncChanges() {
-  const changes = state.methodologySync.changes || [];
+  const changes = (state.methodologySync.changes || []).filter((change) => change.decision === "approved");
   let applied = 0;
   for (const change of changes) {
     const row = state.rows.find((item) => questionNumber(item) === change.question);
@@ -2036,7 +2404,7 @@ function applyMethodologySyncChanges() {
   }
   state.methodologySync.appliedAt = new Date().toISOString();
   state.methodologySync.appliedCount = applied;
-  state.methodologySync.status = applied ? `${applied}개 승인 적용` : "적용할 변경 후보 없음";
+  state.methodologySync.status = applied ? `${applied}개 승인 적용` : "승인된 변경 후보 없음";
   persistWorkspace();
 }
 
@@ -2059,6 +2427,7 @@ function methodologySyncReport() {
       question: change.question,
       title: change.title,
       status: change.status,
+      decision: change.decision || "pending",
       confidence: change.confidence,
       signals: change.signals,
       allocation: change.allocation,
@@ -2078,6 +2447,7 @@ function methodologySyncRows() {
     change.question,
     change.title,
     change.status,
+    change.decision || "pending",
     change.confidence,
     change.signals.join(", "),
     change.allocation,
@@ -2115,7 +2485,7 @@ function renderSync() {
   fragment.querySelector('[data-field="syncChanges"]').innerHTML = changes.length
     ? `
       <table class="table-like compact-table">
-        <thead><tr><th>문항</th><th>상태</th><th>신뢰도</th><th>감지 항목</th><th>배점 차이</th><th>조건 수</th><th>적용</th></tr></thead>
+        <thead><tr><th>문항</th><th>상태</th><th>결정</th><th>신뢰도</th><th>감지 항목</th><th>배점 차이</th><th>조건 수</th><th>적용</th></tr></thead>
         <tbody>
           ${changes
             .map(
@@ -2123,6 +2493,17 @@ function renderSync() {
                 <tr>
                   <td><strong>${escapeHtml(change.question)}</strong><br />${escapeHtml(change.module)} · ${escapeHtml(change.title)}</td>
                   <td><span class="status-badge ${change.confidence === "높음" ? "status-pass" : change.confidence === "중간" ? "status-partial" : "status-fail"}">${escapeHtml(change.status)}</span></td>
+                  <td>
+                    <select data-sync-decision="${escapeHtml(change.id)}">
+                      ${[
+                        ["pending", "보류"],
+                        ["approved", "승인"],
+                        ["ignored", "제외"],
+                      ]
+                        .map(([value, label]) => `<option value="${value}" ${value === (change.decision || "pending") ? "selected" : ""}>${label}</option>`)
+                        .join("")}
+                    </select>
+                  </td>
                   <td>${escapeHtml(change.confidence)}</td>
                   <td>${escapeHtml(change.signals.join(", "))}</td>
                   <td>${escapeHtml(change.allocation || "-")}</td>
@@ -2244,7 +2625,10 @@ function workbookPayload() {
       })]) },
       { name: "증빙매핑", rows: safeSpreadsheetRows([["Module", "Question", "Level", "Condition", "Criteria Detail", "Status", "Evidence or Gap", "Engine"], ...evidenceMapping]) },
       { name: "API상태", rows: safeSpreadsheetRows([["Item", "Value"], ...apiHealthRows()]) },
-      { name: "방법론동기화", rows: safeSpreadsheetRows([["Module", "Question", "Title", "Status", "Confidence", "Detected Signals", "Allocation Diff", "Old chars", "New chars", "Condition Count", "Applied"], ...methodologySyncRows()]) },
+      { name: "채점규칙DB", rows: safeSpreadsheetRows([["Module", "Question", "Title", "Level", "Max Points", "Has Route", "Best Row", "Row-level", "Partial", "Atomic Condition Count", "Atomic Conditions", "Synced"], ...scoringRuleRows()]) },
+      { name: "벤치마크비교", rows: safeSpreadsheetRows([["Question", "Title", "Result", "Benchmark Score", "Auto Score", "Source Line"], ...compareBenchmarkRows().map((row) => [row.question, row.title, row.result, row.benchmarkScore, row.autoScore, row.sourceLine])]) },
+      { name: "리뷰의견", rows: safeSpreadsheetRows([["Key", "Module", "Question", "Title", "Level", "Auto Status", "Expected Score", "Confidence", "Reviewer Decision", "Reviewer Note", "Updated At"], ...reviewerRows(500).map((row) => [row.key, row.module, row.question, row.title, row.level, row.status, row.expectedScore, row.confidence, row.decision, row.note, row.updatedAt])]) },
+      { name: "방법론동기화", rows: safeSpreadsheetRows([["Module", "Question", "Title", "Status", "Decision", "Confidence", "Detected Signals", "Allocation Diff", "Old chars", "New chars", "Condition Count", "Applied"], ...methodologySyncRows()]) },
     ],
   };
 }
@@ -2282,8 +2666,12 @@ function render() {
   setActiveNav(state.activeView);
   document.querySelectorAll("[data-language]").forEach((button) => button.classList.toggle("is-active", button.dataset.language === state.language));
   if (state.activeView === "dashboard") renderDashboard();
+  if (state.activeView === "projects") renderProjects();
   if (state.activeView === "writer") renderWriter();
   if (state.activeView === "evaluation") renderEvaluation();
+  if (state.activeView === "essential") renderEssential();
+  if (state.activeView === "benchmark") renderBenchmark();
+  if (state.activeView === "review") renderReview();
   if (state.activeView === "references") renderReferences();
   if (state.activeView === "sync") renderSync();
   if (state.activeView === "evidence") renderEvidence();
@@ -2315,6 +2703,13 @@ function exportJson() {
     sector: state.sector,
     drafts: state.drafts,
     evaluationRows: exportRows(),
+    scoringRules: scoringRuleRows(),
+    benchmark: {
+      comparedAt: state.benchmark.comparedAt,
+      rows: compareBenchmarkRows(),
+    },
+    reviewerNotes: state.reviewerNotes,
+    projects: state.projects.map((project) => ({ id: project.id, name: project.name, company: project.company, sector: project.sector, savedAt: project.savedAt })),
     workbook: workbookPayload(),
     methodologySync: methodologySyncReport(),
     evidenceCharacters: charCount(state.evidenceLibrary),
@@ -2499,6 +2894,67 @@ document.addEventListener("click", async (event) => {
     }
     return;
   }
+  if (target.id === "saveProjectButton") {
+    state.company = document.querySelector("#projectCompanyInput")?.value || state.company;
+    saveProject(document.querySelector("#projectNameInput")?.value || `${state.company} CDP`);
+    renderProjects();
+    return;
+  }
+  if (target.id === "newProjectButton") {
+    if (!confirm("현재 화면을 새 기업 프로젝트로 비울까요? 저장하지 않은 초안은 먼저 프로젝트 저장을 권장합니다.")) return;
+    state.activeProjectId = "";
+    state.company = document.querySelector("#projectCompanyInput")?.value || "회사명";
+    state.keywords = "";
+    state.evidenceInput = "";
+    state.evidenceLibrary = "";
+    state.drafts = {};
+    state.fileResults = [];
+    state.benchmark = { files: [], rows: [], comparedAt: "" };
+    state.reviewerNotes = {};
+    persistWorkspace();
+    renderProjects();
+    return;
+  }
+  if (target.dataset.projectLoad) {
+    loadProject(target.dataset.projectLoad);
+    renderProjects();
+    return;
+  }
+  if (target.dataset.projectDelete) {
+    if (confirm("선택한 기업 프로젝트 저장본을 삭제할까요? 현재 원본 파일과 내보낸 파일은 삭제되지 않습니다.")) {
+      deleteProject(target.dataset.projectDelete);
+      renderProjects();
+    }
+    return;
+  }
+  if (target.id === "benchmarkExtractButton") {
+    const files = [...(document.querySelector("#benchmarkFileInput")?.files || [])];
+    if (!files.length) {
+      alert("비교할 기존 사전평가 파일을 먼저 선택하세요.");
+      return;
+    }
+    target.disabled = true;
+    target.textContent = "비교 중...";
+    try {
+      const results = await extractFileTexts(files);
+      state.benchmark.files = results || [];
+      state.benchmark.rows = compareBenchmarkRows();
+      state.benchmark.comparedAt = new Date().toISOString();
+    } catch (error) {
+      state.benchmark.files = [{ filename: "benchmark-upload", ok: false, characters: 0, text: "", error: error.message }];
+      state.benchmark.rows = [];
+      state.benchmark.comparedAt = new Date().toISOString();
+    }
+    persistWorkspace();
+    renderBenchmark();
+    return;
+  }
+  if (target.id === "benchmarkClearButton") {
+    state.benchmark = { files: [], rows: [], comparedAt: "" };
+    persistWorkspace();
+    renderBenchmark();
+    return;
+  }
   if (target.id === "apiCheckButton") {
     state.apiBaseUrl = normalizeApiBaseUrl(apiBaseUrlInput?.value || "");
     state.apiToken = text(apiTokenInput?.value || "");
@@ -2531,11 +2987,12 @@ document.addEventListener("click", async (event) => {
     return;
   }
   if (target.id === "syncApplyButton") {
-    if (!state.methodologySync.changes.length) {
-      alert("적용할 방법론 변경 후보가 없습니다.");
+    const approvedChanges = (state.methodologySync.changes || []).filter((change) => change.decision === "approved");
+    if (!approvedChanges.length) {
+      alert("승인된 방법론 변경 후보가 없습니다. 먼저 변경 후보별로 '승인'을 선택하세요.");
       return;
     }
-    if (confirm(`${state.methodologySync.changes.length}개 변경 후보를 현재 세션의 평가기준 overlay로 적용할까요? 원본 데이터셋 파일은 덮어쓰지 않습니다.`)) {
+    if (confirm(`${approvedChanges.length}개 승인 후보를 현재 세션의 평가기준 overlay로 적용할까요? 원본 데이터셋 파일은 덮어쓰지 않습니다.`)) {
       applyMethodologySyncChanges();
       renderSync();
     }
@@ -2604,6 +3061,12 @@ document.addEventListener("input", (event) => {
   if (target.id === "syncSourceUrl") {
     state.methodologySync.sourceUrl = target.value;
   }
+  if (target.id === "projectCompanyInput") {
+    state.company = target.value;
+  }
+  if (target.dataset.reviewNote) {
+    setReviewerNote(target.dataset.reviewNote, { note: target.value });
+  }
   persistWorkspace();
 });
 
@@ -2627,6 +3090,20 @@ document.addEventListener("change", (event) => {
     state.sector = target.value;
     persistWorkspace();
   }
+  if (target.id === "gptQualityMode") {
+    state.gptQualityMode = target.checked;
+    persistWorkspace();
+  }
+  if (target.dataset.reviewDecision) {
+    setReviewerNote(target.dataset.reviewDecision, { decision: target.value });
+  }
+  if (target.dataset.syncDecision) {
+    const change = (state.methodologySync.changes || []).find((item) => item.id === target.dataset.syncDecision);
+    if (change) {
+      change.decision = target.value;
+      persistWorkspace();
+    }
+  }
 });
 
 exportJsonButton.addEventListener("click", exportJson);
@@ -2648,7 +3125,7 @@ async function loadDataset(url) {
   if (!state.rows.some((row) => questionNumber(row) === state.selectedQuestion)) {
     state.selectedQuestion = state.rows[0] ? questionNumber(state.rows[0]) : "";
   }
-  if (!["dashboard", "writer", "evaluation", "references", "sync", "evidence", "export"].includes(state.activeView)) {
+  if (!["dashboard", "projects", "writer", "evaluation", "essential", "benchmark", "review", "references", "sync", "evidence", "export"].includes(state.activeView)) {
     state.activeView = "dashboard";
   }
   syncApiInputs();

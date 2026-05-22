@@ -362,6 +362,16 @@ textarea {
   margin-top: 12px;
 }
 
+.inline-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inline-field input {
+  width: auto;
+}
+
 .question-list {
   display: grid;
   gap: 8px;
@@ -708,6 +718,17 @@ textarea {
   color: var(--muted);
   font-size: 12px;
   text-transform: uppercase;
+}
+
+.table-like select,
+.table-like textarea {
+  width: 100%;
+  min-width: 120px;
+}
+
+.table-like textarea {
+  min-height: 58px;
+  resize: vertical;
 }
 
 .allocation-table-wrap {
