@@ -124,6 +124,23 @@ python scripts\polish_korean_titles.py
 python scripts\normalize_korean_mixed_text.py
 ```
 
+## 사전평가 벤치마크 보정
+
+기존 사전평가 XLSX를 기준으로 자동평가 로직을 보정하려면 원본 파일 경로를 UTF-8 텍스트 파일에 한 줄씩 적은 뒤 아래처럼 실행합니다. 원본 엑셀은 읽기만 하며, 결과는 Git에 올라가지 않는 `outputs/benchmark/`에 생성됩니다.
+
+```powershell
+python scripts\benchmark_preassessment.py --path-file outputs\benchmark\benchmark_paths.txt --output-xlsx outputs\benchmark\preassessment_benchmark.xlsx --output-json outputs\benchmark\preassessment_benchmark.json
+```
+
+생성 결과:
+
+- `Summary`: 기업별 파싱 성공 여부, 문항 수, 감점 총량, 배점 일치/불일치 수
+- `Parsed Scores`: 문항별 D/A/M/L 점수와 배점
+- `Deduction Priority`: 감점이 큰 문항 우선순위
+- `Denominator Check`: 현재 데이터셋 배점과 기존 사전평가 배점의 차이
+
+2025 사전평가 파일을 2026 데이터셋과 비교하면 기준 연도 차이 때문에 배점 불일치가 발생할 수 있습니다. 이 경우 불일치 항목은 오류가 아니라 방법론 변경 또는 보정 후보로 검토해야 합니다.
+
 ## 주의사항
 
 - 자동 평가와 답변 생성은 사전평가 및 작성 보조용입니다. 최종 제출 전에는 반드시 평가방법론 원문과 증빙자료를 대조하십시오.
